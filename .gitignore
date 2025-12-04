@@ -1,3 +1,27 @@
+work/
+results/
+.nextflow/
+.nextflow.log*
+*.img
+.DS_Store
+
+# Data and Metadata
+data/
+metadata.csv
+metadata.json
+samplesheet*.csv
+
+# Test and Temporary files
+test_output/
+test_agr_manual/
+test_sccmec_manual*
+test.fasta
+test_samplesheet.csv
+
+# IDEs
+.idea/
+.vscode/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -206,27 +230,5 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Nextflow and Pipeline specific
-work/
-results/
-.nextflow/
-.nextflow.log*
-*.img
-.DS_Store
-
-# Data and Metadata
-data/
-metadata.csv
-metadata.json
-samplesheet*.csv
-
-# Test and Temporary files
-test_output/
-test_agr_manual/
-test_sccmec_manual*
-test.fasta
-test_samplesheet.csv
-
-# IDEs
-.idea/
-.vscode/
+# Documentation drafts
+enhancement_suggestions.md
