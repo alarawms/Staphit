@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+import argparse
+import csv
+import os
+import re
+import sys
+from pathlib import Path
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Scan a directory for FastQ files and generate a samplesheet.csv for the MRSA pipeline.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument("-p", "--path", required=True, help="Path to directory containing FastQ files")
+    parser.add_argument("-o", "--output", default="samplesheet.csv", help="Output CSV file name")
+    parser.add_argument("-r", "--recursive", action="store_true", help="Recursively search for files")
+    parser.add_argument("--pattern", default="*.fastq.gz", help="Glob pattern to match files (e.g., '*.fastq.gz', '*.fq.gz')")
+    return parser.parse_args()
+
+def find_fastq_pairs(directory, recursive=False, pattern="*.fastq.gz"):
+    """
+    Finds paired-end FastQ files in a directory.
+    Assumes pairs are marked with _R1/_R2 or _1/_2.
+    """
+    path_obj = Path(directory)
+    if not path_obj.exists():
+        print(f"Error: Directory '{directory}' does not exist.")
+        sys.exit(1)
+
+    if recursive:
+        files = sorted(list(path_obj.rglob(pattern)))
+    else:
+        files = sorted(list(path_obj.glob(pattern)))
+
+    samples = {}
+    
+    # Common paired-end suffixes
+    # (suffix_pattern, replacement)
+    # We try to match _R1 / _R2 or _1 / _2
+    
+    for file_path in files:
+        fname = file_path.name
+        fpath = str(file_path.absolute())
+        
+        # Try to identify sample name and read pair
+        # Pattern 1: _R1_001 / _R2_001 (Illumina)
+        match = re.search(r'(.+)_R([12])(_[0-9]+)?(\.fastq|\.fq)(\.gz)?$', fname)
+        if match:
+            sample_name = match.group(1)
+            read_num = match.group(2)
+        else:
+            # Pattern 2: _1 / _2
+            match = re.search(r'(.+)_([12])(\.fastq|\.fq)(\.gz)?$', fname)
+            if match:
+                sample_name = match.group(1)
+                read_num = match.group(2)
+            else:
+                # Skip if not clearly paired
+                continue
+        
+        if sample_name not in samples:
+            samples[sample_name] = {"fastq_1": None, "fastq_2": None}
+        
+        if read_num == "1":
+            samples[sample_name]["fastq_1"] = fpath
+        elif read_num == "2":
+            samples[sample_name]["fastq_2"] = fpath
+
+    # Filter out incomplete pairs
+    complete_samples = []
+    for sample, reads in samples.items():
+        if reads["fastq_1"] and reads["fastq_2"]:
+            complete_samples.append({
+                "sample": sample,
+                "sra": "",
+                "fastq_1": reads["fastq_1"],
+                "fastq_2": reads["fastq_2"]
+            })
+        else:
+            print(f"Warning: Sample '{sample}' has missing read pairs. Skipping.")
+            if reads["fastq_1"]: print(f"  Found R1: {reads['fastq_1']}")
+            if reads["fastq_2"]: print(f"  Found R2: {reads['fastq_2']}")
+
+    return complete_samples
+
+def main():
+    args = parse_args()
+    
+    print(f"Scanning '{args.path}' for files matching '{args.pattern}'...")
+    samples = find_fastq_pairs(args.path, args.recursive, args.pattern)
+    
+    if not samples:
+        print("No complete paired-end samples found.")
+        sys.exit(1)
+    
+    print(f"Found {len(samples)} paired-end samples.")
+    
+    # Write to CSV
+    fieldnames = ["sample", "sra", "fastq_1", "fastq_2"]
+    
+    try:
+        with open(args.output, 'w', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for s in samples:
+                writer.writerow(s)
+        print(f"Samplesheet written to '{args.output}'")
+    except IOError as e:
+        print(f"Error writing to file '{args.output}': {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
