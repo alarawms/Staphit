@@ -105,7 +105,7 @@ workflow {
         TRIMMOMATIC(reads_ch)
         FASTQC(TRIMMOMATIC.out.trimmed_reads)
         
-        ch_trimmed_reads = TRIMMOMATIC.out.trimmed_reads.map { id, fq1, fq2 -> [id, [fq1, fq2]] }
+        ch_trimmed_reads = TRIMMOMATIC.out.trimmed_reads.map { id, files -> [id, files] }
         
         // --- Assembly ---
         SPADES(ch_trimmed_reads)
