@@ -8,7 +8,8 @@ process TRIMMOMATIC {
     tuple val(sample_id), path(reads)
 
     output:
-    tuple val(sample_id), path("*.trimmed.fastq.gz"), path("*.trim.log")
+    tuple val(sample_id), path("*.trimmed.fastq.gz"), emit: trimmed_reads
+    tuple val(sample_id), path("*.trim.log"), emit: log
 
     script:
     def (r1, r2) = reads
