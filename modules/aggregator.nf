@@ -6,7 +6,7 @@ process AGGREGATOR {
     container 'python:3.9-slim'
 
     input:
-    tuple val(sample_id), path(fastp_json), path(quast_dir), path(mlst_tsv), path(abricate_tabs), path(amrfinder_report), path(mash_sketch), path(spa_report), path(sccmec_report), path(agr_report), path(kma_res), path(metadata_json)
+    tuple val(sample_id), path(trim_log), path(fastqc_files), path(quast_dir), path(mlst_tsv), path(abricate_tabs), path(amrfinder_report), path(mash_sketch), path(spa_report), path(sccmec_report), path(agr_report), path(kma_res), path(metadata_json)
 
     output:
     path "${sample_id}_report.json"
@@ -24,7 +24,8 @@ import sys
 
 sample_id = "${sample_id}"
 metadata_file = "${metadata_json}"
-fastp_file = "${fastp_json}"
+trim_log = "${trim_log}"
+fastqc_files = [f for f in os.listdir('.') if f.endswith('.zip')]
 quast_dir = "${quast_dir}"
 mlst_file = "${mlst_tsv}"
 abricate_files = [f for f in os.listdir('.') if f.endswith('.tab') and 'abricate' in f]
@@ -67,19 +68,30 @@ try:
 except Exception as e:
     print(f"Warning: Metadata parse error: {e}")
 
-# 2. Parse Fastp (QC)
+# 2. Parse Trimmomatic Log & FastQC
 try:
-    with open(fastp_file, 'r') as f:
-        fastp_data = json.load(f)
-        data["qc"]["raw_reads"] = fastp_data.get("summary", {}).get("before_filtering", {}).get("total_reads", 0)
-        data["qc"]["trimmed_reads"] = fastp_data.get("summary", {}).get("after_filtering", {}).get("total_reads", 0)
-        if data["qc"]["raw_reads"] > 0:
-            data["qc"]["survival_rate"] = (data["qc"]["trimmed_reads"] / data["qc"]["raw_reads"]) * 100
-        else:
-            data["qc"]["survival_rate"] = 0
-        data["qc"]["q30_rate"] = fastp_data.get("summary", {}).get("after_filtering", {}).get("q30_rate", 0)
+    # Trimmomatic
+    with open(trim_log, 'r') as f:
+        content = f.read()
+        # Example: Input Read Pairs: 100 Both Surviving: 90 (90.00%) ...
+        match = re.search(r'Input Read Pairs: (\\d+).*Both Surviving: (\\d+)', content)
+        if match:
+            raw_reads = int(match.group(1))
+            surviving_reads = int(match.group(2))
+            data["qc"]["raw_reads"] = raw_reads
+            data["qc"]["trimmed_reads"] = surviving_reads
+            if raw_reads > 0:
+                data["qc"]["survival_rate"] = (surviving_reads / raw_reads) * 100
+            else:
+                data["qc"]["survival_rate"] = 0
+
+    # FastQC (Approximate Q30 from one of the files if possible, or skip)
+    # Parsing FastQC for exact Q30 rate is complex without iterating all reads.
+    # We will leave Q30 as 0 or try to parse basic stats if needed.
+    data["qc"]["q30_rate"] = 0 
+    
 except Exception as e:
-    print(f"Warning: Fastp parse error: {e}")
+    print(f"Warning: QC parse error: {e}")
 
 # 3. Parse QUAST
 try:

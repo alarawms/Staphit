@@ -7,7 +7,8 @@ params.input = 'samplesheet.csv'
 
 // -- MODULES --
 include { FETCH_SRA } from './modules/fetch_sra.nf'
-include { FASTP } from './modules/fastp.nf'
+include { TRIMMOMATIC } from './modules/trimmomatic.nf'
+include { FASTQC } from './modules/fastqc.nf'
 include { SPADES } from './modules/spades.nf'
 include { PROKKA } from './modules/prokka.nf'
 include { ABRICATE } from './modules/abricate.nf'
@@ -100,10 +101,11 @@ workflow {
         // --- Mix SRA and Local Reads ---
         reads_ch = reads_from_sra_ch.mix(reads_from_local_ch)
 
-        // --- QC with fastp ---
-        FASTP(reads_ch)
+        // --- QC with Trimmomatic and FastQC ---
+        TRIMMOMATIC(reads_ch)
+        FASTQC(TRIMMOMATIC.out.trimmed_reads)
         
-        ch_trimmed_reads = FASTP.out.reads.map { id, fq1, fq2 -> [id, [fq1, fq2]] }
+        ch_trimmed_reads = TRIMMOMATIC.out.trimmed_reads.map { id, fq1, fq2 -> [id, [fq1, fq2]] }
         
         // --- Assembly ---
         SPADES(ch_trimmed_reads)
@@ -124,11 +126,13 @@ workflow {
 
         // --- Aggregation ---
         // Prepare inputs:
-        // FASTP output: [id, json, html] -> [id, json]
-        ch_fastp_json = FASTP.out.json.map { id, json -> [id, json] }
+        // Trimmomatic log and FastQC output
+        ch_trim_log = TRIMMOMATIC.out.log
+        ch_fastqc_out = FASTQC.out.map { id, files -> [id, files] }
         
         // Join all outputs by sample_id
-        ch_agg_in = ch_fastp_json
+        ch_agg_in = ch_trim_log
+            .join(ch_fastqc_out)
             .join(QUAST.out)
             .join(MLST.out)
             .join(ABRICATE.out)
@@ -157,7 +161,8 @@ workflow {
 
         // Collect all the outputs and pass them to MultiQC
         ch_multiqc_in = channel.empty()
-        ch_multiqc_in = ch_multiqc_in.mix(FASTP.out.json.map{ it[1] }.collect())
+        ch_multiqc_in = ch_multiqc_in.mix(FASTQC.out.collect())
+        ch_multiqc_in = ch_multiqc_in.mix(TRIMMOMATIC.out.log.map{ it[1] }.collect())
         ch_multiqc_in = ch_multiqc_in.mix(SPADES.out.map{ it[1] }.collect())
         ch_multiqc_in = ch_multiqc_in.mix(PROKKA.out.collect())
         ch_multiqc_in = ch_multiqc_in.mix(ABRICATE.out.map{ it[1] }.collect())
