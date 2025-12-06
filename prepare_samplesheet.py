@@ -168,6 +168,57 @@ def process_local_files(r1_path: str, r2_path: str = None) -> dict:
         "library_layout": "PAIRED" if r2_path else "SINGLE"
     }
 
+def find_fastq_pairs(directory: str) -> list:
+    """
+    Scans a directory for FastQ files and pairs them based on common suffixes.
+    Returns a list of (r1, r2) tuples.
+    """
+    fastq_files = []
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if re.search(r'\.(fastq|fq)(\.gz)?$', file, re.IGNORECASE):
+                fastq_files.append(os.path.join(root, file))
+    
+    pairs = {}
+    # Common paired-end suffixes
+    # (suffix_pattern, r1_marker, r2_marker)
+    # We try to match R1 first, then look for R2
+    patterns = [
+        (r'(_R1)(_001)?\.(fastq|fq)(\.gz)?$', '_R1', '_R2'),
+        (r'(_1)(_001)?\.(fastq|fq)(\.gz)?$', '_1', '_2')
+    ]
+
+    processed_files = set()
+
+    for f in sorted(fastq_files):
+        if f in processed_files:
+            continue
+            
+        matched = False
+        for pattern, r1_marker, r2_marker in patterns:
+            match = re.search(pattern, f, re.IGNORECASE)
+            if match:
+                # This is a potential R1 file
+                r1_path = f
+                # Construct expected R2 path
+                r2_path = f.replace(r1_marker, r2_marker)
+                
+                if os.path.exists(r2_path) and r2_path in fastq_files:
+                    pairs[r1_path] = r2_path
+                    processed_files.add(r1_path)
+                    processed_files.add(r2_path)
+                    matched = True
+                    break
+        
+        if not matched:
+            # If it didn't match R1 pattern, check if it's an R2 file that we haven't processed yet
+            # (though sorted order usually handles R1 first).
+            # Or it might be a single-end file (which we currently skip or handle as single?)
+            # For now, we only return pairs as requested.
+            pass
+
+    return list(pairs.items())
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate a samplesheet.csv for the MRSA Nextflow pipeline.",
@@ -181,8 +232,10 @@ def main():
     parser.add_argument("-f", "--fastq", nargs='*', default=[],
                         help="List of local FastQ file pairs (R1 R2). "
                              "Provide R1 and R2 paths separated by a space. "
-                             "e.g., -f data/sampleA_R1.fastq.gz data/sampleA_R2.fastq.gz "
-                             "       data/sampleB_R1.fastq.gz data/sampleB_R2.fastq.gz")
+                             "e.g., -f data/sampleA_R1.fastq.gz data/sampleA_R2.fastq.gz")
+    parser.add_argument("-d", "--input-dir", 
+                        help="Directory to scan for paired FastQ files. "
+                             "Automatically pairs files with _R1/_R2 or _1/_2 suffixes.")
     
     args = parser.parse_args()
 
@@ -193,21 +246,40 @@ def main():
         sra_records = process_sra_accession(sra_accession)
         all_samples.extend(sra_records)
 
-    # Process local FastQ files
-    if len(args.fastq) % 2 != 0:
-        print("Error: Local FastQ files must be provided in R1 R2 pairs.")
-        exit(1)
-    
-    for i in range(0, len(args.fastq), 2):
-        r1 = args.fastq[i]
-        r2 = args.fastq[i+1]
-        try:
-            local_record = process_local_files(r1, r2)
-            all_samples.append(local_record)
-        except FileNotFoundError as e:
-            print(f"Error processing local files: {e}. Skipping.")
-        except Exception as e:
-            print(f"An unexpected error occurred for local files {r1}, {r2}: {e}. Skipping.")
+    # Process local FastQ files from manual list
+    if args.fastq:
+        if len(args.fastq) % 2 != 0:
+            print("Error: Local FastQ files must be provided in R1 R2 pairs.")
+            exit(1)
+        
+        for i in range(0, len(args.fastq), 2):
+            r1 = args.fastq[i]
+            r2 = args.fastq[i+1]
+            try:
+                local_record = process_local_files(r1, r2)
+                all_samples.append(local_record)
+            except FileNotFoundError as e:
+                print(f"Error processing local files: {e}. Skipping.")
+            except Exception as e:
+                print(f"An unexpected error occurred for local files {r1}, {r2}: {e}. Skipping.")
+
+    # Process local FastQ files from directory
+    if args.input_dir:
+        if not os.path.isdir(args.input_dir):
+            print(f"Error: Input directory '{args.input_dir}' does not exist.")
+        else:
+            print(f"Scanning directory '{args.input_dir}' for FastQ pairs...")
+            pairs = find_fastq_pairs(args.input_dir)
+            if not pairs:
+                print("No paired FastQ files found in directory.")
+            
+            for r1, r2 in pairs:
+                try:
+                    local_record = process_local_files(r1, r2)
+                    all_samples.append(local_record)
+                    print(f"Found pair: {os.path.basename(r1)} / {os.path.basename(r2)}")
+                except Exception as e:
+                    print(f"Error processing pair {r1}, {r2}: {e}")
 
     if not all_samples:
         print("No samples processed. Samplesheet will not be created.")
