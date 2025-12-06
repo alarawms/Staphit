@@ -12,6 +12,6 @@ process PROKKA {
 
     script:
     """
-    prokka --outdir . --force --prefix $sample_id --kingdom Bacteria --genus Staphylococcus --species aureus --strain $sample_id $scaffolds
+    prokka --outdir . --force --prefix $sample_id --kingdom Bacteria --genus Staphylococcus --species aureus --strain $sample_id --compliant --centre Staphit $scaffolds
     """
 }
