@@ -12,6 +12,6 @@ process QUAST {
 
     script:
     """
-    quast.py $assembly -o ${sample_id}_quast_report
+    quast.py $assembly -o ${sample_id}_quast_report --min-contig 1
     """
 }
