@@ -23,6 +23,7 @@ include { MASH } from './modules/mash.nf'
 include { AMRFINDERPLUS } from './modules/amrfinderplus.nf'
 include { SPATYPER } from './modules/spatyper.nf'
 include { SCCMEC } from './modules/sccmec.nf'
+include { SCREEN_SPECIES } from './modules/screen_species.nf'
 include { AGR_TYPING } from './modules/agr_typing.nf'
 include { FETCH_RESFINDER_DB; INDEX_DB; KMA } from './modules/kma.nf'
 include { VISUALIZATION } from './modules/visualization.nf'
@@ -125,18 +126,39 @@ workflow {
 
         // Filter out poor assemblies (< 500 KB = junk for S. aureus ~2.8 Mb)
         ch_assemblies = ch_raw_assemblies.filter { sample_id, fasta ->
-            fasta.size() > 500000
+            fasta.size() > params.min_assembly_size
         }
 
-        QUAST(ch_assemblies)
-        MASH(ch_assemblies)
-        AMRFINDERPLUS(ch_assemblies)
-        SPATYPER(ch_assemblies)
-        SCCMEC(ch_assemblies)
-        AGR_TYPING(ch_assemblies)
-        PROKKA(ch_assemblies)
-        ABRICATE(ch_assemblies)
-        MLST(ch_assemblies)
+        // --- Species Screening ---
+        if (!params.skip_species_check) {
+            log.info "Running species screening against S. aureus USA300 (mash dist < ${params.min_mash_dist})..."
+            SCREEN_SPECIES(ch_assemblies)
+            ch_screened_assemblies = SCREEN_SPECIES.out.screened_assemblies
+                .filter { sample_id, fasta, screen_file ->
+                    def pass = new File(screen_file).text.split('\t')[1] == 'PASS'
+                    if (!pass) {
+                        log.warn "Sample ${sample_id} failed species screen - filtered out"
+                    }
+                    return pass
+                }
+                .map { sample_id, fasta, screen_file -> [sample_id, fasta] }
+            
+            # Copy screen summary to output
+            SCREEN_SPECIES.out.summary.map { it -> file(it).copyTo("${params.outdir}/screen_species_summary.tsv") }
+        } else {
+            log.info "Skipping species check (--skip_species_check set)"
+            ch_screened_assemblies = ch_assemblies
+        }
+
+        QUAST(ch_screened_assemblies)
+        MASH(ch_screened_assemblies)
+        AMRFINDERPLUS(ch_screened_assemblies)
+        SPATYPER(ch_screened_assemblies)
+        SCCMEC(ch_screened_assemblies)
+        AGR_TYPING(ch_screened_assemblies)
+        PROKKA(ch_screened_assemblies)
+        ABRICATE(ch_screened_assemblies)
+        MLST(ch_screened_assemblies)
 
         // --- Read-based AMR (KMA) ---
         FETCH_RESFINDER_DB()
