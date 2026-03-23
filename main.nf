@@ -10,6 +10,7 @@ include { FETCH_SRA } from './modules/fetch_sra.nf'
 include { TRIMMOMATIC } from './modules/trimmomatic.nf'
 include { FASTQC } from './modules/fastqc.nf'
 include { SPADES } from './modules/spades.nf'
+include { SKESA } from './modules/skesa.nf'
 include { PROKKA } from './modules/prokka.nf'
 include { ABRICATE } from './modules/abricate.nf'
 include { MLST } from './modules/mlst.nf'
@@ -35,7 +36,7 @@ include { SUMMARY_MERGER } from './modules/summary_merger.nf'
 workflow {
     main:
         // Debug prints
-        log.info "Params: species=${params.species}, search_limit=${params.search_limit}, input=${params.input}"
+        log.info "Params: species=${params.species}, search_limit=${params.search_limit}, input=${params.input}, assembler=${params.assembler}"
 
         // Initialize metadata channel
         ch_metadata_json = Channel.empty()
@@ -53,9 +54,14 @@ workflow {
             // If not searching, we expect the file to exist.
             input_csv = Channel.fromPath(params.input, checkIfExists: true)
             
-            // Try to find metadata.json if available locally
+            // Try to find metadata.json if available locally, otherwise create empty one
             if (file('metadata.json').exists()) {
                 ch_metadata_json = Channel.fromPath('metadata.json')
+            } else {
+                // Create a dummy metadata file so the aggregator can still run
+                def dummy = file("${workDir}/metadata.json")
+                dummy.text = '[]'
+                ch_metadata_json = Channel.of(dummy)
             }
         }
 
@@ -102,22 +108,35 @@ workflow {
         reads_ch = reads_from_sra_ch.mix(reads_from_local_ch)
 
         // --- QC with Trimmomatic and FastQC ---
-        TRIMMOMATIC(reads_ch)
+        ch_adapters = Channel.fromPath("${projectDir}/assets/TruSeq3-PE.fa", checkIfExists: true)
+        TRIMMOMATIC(reads_ch, ch_adapters)
         FASTQC(TRIMMOMATIC.out.trimmed_reads)
         
         ch_trimmed_reads = TRIMMOMATIC.out.trimmed_reads.map { id, files -> [id, files] }
         
         // --- Assembly ---
-        SPADES(ch_trimmed_reads)
-        QUAST(SPADES.out)
-        MASH(SPADES.out)
-        AMRFINDERPLUS(SPADES.out)
-        SPATYPER(SPADES.out)
-        SCCMEC(SPADES.out)
-        AGR_TYPING(SPADES.out)
-        PROKKA(SPADES.out)
-        ABRICATE(SPADES.out)
-        MLST(SPADES.out)
+        if (params.assembler == 'skesa') {
+            SKESA(ch_trimmed_reads)
+            ch_raw_assemblies = SKESA.out
+        } else {
+            SPADES(ch_trimmed_reads)
+            ch_raw_assemblies = SPADES.out
+        }
+
+        // Filter out poor assemblies (< 500 KB = junk for S. aureus ~2.8 Mb)
+        ch_assemblies = ch_raw_assemblies.filter { sample_id, fasta ->
+            fasta.size() > 500000
+        }
+
+        QUAST(ch_assemblies)
+        MASH(ch_assemblies)
+        AMRFINDERPLUS(ch_assemblies)
+        SPATYPER(ch_assemblies)
+        SCCMEC(ch_assemblies)
+        AGR_TYPING(ch_assemblies)
+        PROKKA(ch_assemblies)
+        ABRICATE(ch_assemblies)
+        MLST(ch_assemblies)
 
         // --- Read-based AMR (KMA) ---
         FETCH_RESFINDER_DB()
@@ -161,9 +180,9 @@ workflow {
 
         // Collect all the outputs and pass them to MultiQC
         ch_multiqc_in = channel.empty()
-        ch_multiqc_in = ch_multiqc_in.mix(FASTQC.out.collect())
+        ch_multiqc_in = ch_multiqc_in.mix(FASTQC.out.map{ it[1] }.collect())
         ch_multiqc_in = ch_multiqc_in.mix(TRIMMOMATIC.out.log.map{ it[1] }.collect())
-        ch_multiqc_in = ch_multiqc_in.mix(SPADES.out.map{ it[1] }.collect())
+        ch_multiqc_in = ch_multiqc_in.mix(ch_assemblies.map{ it[1] }.collect())
         ch_multiqc_in = ch_multiqc_in.mix(PROKKA.out.collect())
         ch_multiqc_in = ch_multiqc_in.mix(ABRICATE.out.map{ it[1] }.collect())
         ch_multiqc_in = ch_multiqc_in.mix(MLST.out.map{ it[1] }.collect())

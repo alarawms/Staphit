@@ -13,10 +13,18 @@ process PANAROO {
 
     script:
     """
-    # Panaroo requires at least 2 samples. If we have fewer, skip or mock.
-    count=\$(ls *.gff | wc -l)
+    # Remove poor assemblies — S. aureus should have ~2500 CDS; anything under 500 is junk
+    for f in *.gff; do
+        cds_count=\$(grep -c "CDS" "\$f" 2>/dev/null || echo 0)
+        if [ ! -s "\$f" ] || [ "\$cds_count" -lt 500 ]; then
+            echo "Removing invalid GFF (\$cds_count CDS): \$f"
+            rm -f "\$f"
+        fi
+    done
+
+    count=\$(ls *.gff 2>/dev/null | wc -l)
     if [ "\$count" -lt 2 ]; then
-        echo "Not enough samples for Panaroo (needs > 1). Skipping."
+        echo "Not enough valid samples for Panaroo (needs >= 2, found \$count). Skipping."
         exit 0
     fi
 

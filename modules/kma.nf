@@ -6,6 +6,7 @@ process FETCH_RESFINDER_DB {
 
     script:
     """
+    apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1
     git clone https://bitbucket.org/genomicepidemiology/resfinder_db.git
     """
 }

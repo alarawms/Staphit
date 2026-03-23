@@ -3,6 +3,7 @@ process SCCMEC {
     label 'process_low'
     publishDir "${params.outdir}/sccmec", mode: 'copy'
     container 'alarawms/sccmec_typer:latest'
+    containerOptions '--entrypoint ""'
 
     input:
     tuple val(sample_id), path(assembly)
@@ -15,11 +16,13 @@ process SCCMEC {
 
     script:
     """
-    python /app/bin/sccmec_typer.py \
+    conda run --no-capture-output -n sccmec_typer \
+        python /app/bin/sccmec_typer.py \
         --1 ${assembly} \
-        --db /app/db/sccmec_targets.fasta \
-        --output ${sample_id}_sccmec \
-        --threads ${task.cpus}
+        -d /app/db/sccmec_targets.fasta \
+        -o ${sample_id}_sccmec \
+        --threads ${task.cpus} \
+        --no-viz
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

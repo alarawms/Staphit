@@ -6,6 +6,7 @@ process TRIMMOMATIC {
 
     input:
     tuple val(sample_id), path(reads)
+    each path(adapters)
 
     output:
     tuple val(sample_id), path("*.trimmed.fastq.gz"), emit: trimmed_reads
@@ -18,7 +19,7 @@ process TRIMMOMATIC {
         $r1 $r2 \\
         ${sample_id}_1.trimmed.fastq.gz ${sample_id}_1.unpaired.fastq.gz \\
         ${sample_id}_2.trimmed.fastq.gz ${sample_id}_2.unpaired.fastq.gz \\
-        ILLUMINACLIP:$baseDir/assets/TruSeq3-PE.fa:2:30:10 \\
+        ILLUMINACLIP:${adapters}:2:30:10 \\
         LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36 2> ${sample_id}.trim.log
     """
 }

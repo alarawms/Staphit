@@ -19,6 +19,6 @@ process IQTREE {
         exit 0
     fi
 
-    iqtree -s $alignment -m MFP -nt AUTO -ntmax ${task.cpus} -bb 1000
+    iqtree2 -s $alignment -m MFP -nt AUTO -ntmax ${task.cpus} -bb 1000
     """
 }

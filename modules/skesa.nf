@@ -1,8 +1,8 @@
 nextflow.enable.dsl=2
 
-process SPADES {
+process SKESA {
     tag "$sample_id"
-    publishDir "${params.outdir}/spades", mode: 'copy'
+    publishDir "${params.outdir}/skesa", mode: 'copy'
     errorStrategy 'ignore'
 
     input:
@@ -14,7 +14,6 @@ process SPADES {
     script:
     def (r1, r2) = reads
     """
-    spades.py --only-assembler -1 $r1 -2 $r2 -o . -m ${task.memory.giga.intValue()}
-    mv scaffolds.fasta ${sample_id}.scaffolds.fasta
+    skesa --reads $r1,$r2 --cores ${task.cpus} --memory ${task.memory.giga.intValue()} --contigs_out ${sample_id}.scaffolds.fasta
     """
 }
