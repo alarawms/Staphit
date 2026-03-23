@@ -37,6 +37,11 @@ workflow {
     main:
         // Debug prints
         log.info "Params: species=${params.species}, search_limit=${params.search_limit}, input=${params.input}, assembler=${params.assembler}"
+        // Validate reads_limit if set
+        if (params.reads_limit != null && (params.reads_limit as int) <= 0) {
+            error "params.reads_limit must be a positive integer or null, got: ${params.reads_limit}"
+        }
+
 
         // Initialize metadata channel
         ch_metadata_json = Channel.empty()
@@ -92,6 +97,7 @@ workflow {
 
         // --- SRA Processing ---
         FETCH_SRA(ch_sra_to_fetch.map { row_tuple -> [row_tuple[0].id, row_tuple[1], params.reads_limit] })
+            .ifEmpty { log.warn "No SRA samples to fetch or all SRA downloads failed" }
         
         reads_from_sra_ch = FETCH_SRA.out.map { sample_id, path ->
             def read1 = path.resolve(sample_id + "_1.fastq.gz")
@@ -108,7 +114,7 @@ workflow {
         reads_ch = reads_from_sra_ch.mix(reads_from_local_ch)
 
         // --- QC with Trimmomatic and FastQC ---
-        ch_adapters = Channel.fromPath("${projectDir}/assets/TruSeq3-PE.fa", checkIfExists: true)
+        ch_adapters = Channel.fromPath(params.adapters, checkIfExists: true)
         TRIMMOMATIC(reads_ch, ch_adapters)
         FASTQC(TRIMMOMATIC.out.trimmed_reads)
         
@@ -125,6 +131,8 @@ workflow {
 
         // Filter out poor assemblies (< 500 KB = junk for S. aureus ~2.8 Mb)
         ch_assemblies = ch_raw_assemblies.filter { sample_id, fasta ->
+        // Note: SPAdes/SKESA output uncompressed FASTA, so file size in bytes ~= sequence length
+        // 500KB is a reasonable lower bound for S. aureus (~2.8Mb genome)
             fasta.size() > 500000
         }
 
@@ -187,7 +195,6 @@ workflow {
         ch_multiqc_in = ch_multiqc_in.mix(ABRICATE.out.map{ it[1] }.collect())
         ch_multiqc_in = ch_multiqc_in.mix(MLST.out.map{ it[1] }.collect())
         ch_multiqc_in = ch_multiqc_in.mix(QUAST.out.map{ it[1] }.collect())
-        ch_multiqc_in = ch_multiqc_in.mix(MASH.out.sketch.map{ it[1] }.collect())
         
         MULTIQC(ch_multiqc_in.collect())
 }
