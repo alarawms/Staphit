@@ -24,6 +24,7 @@ include { AMRFINDERPLUS } from './modules/amrfinderplus.nf'
 include { SPATYPER } from './modules/spatyper.nf'
 include { SCCMEC } from './modules/sccmec.nf'
 include { SCREEN_SPECIES } from './modules/screen_species.nf'
+include { QC_FILTER } from './modules/qc_filter.nf'
 include { AGR_TYPING } from './modules/agr_typing.nf'
 include { FETCH_RESFINDER_DB; INDEX_DB; KMA } from './modules/kma.nf'
 include { VISUALIZATION } from './modules/visualization.nf'
@@ -150,15 +151,38 @@ workflow {
             ch_screened_assemblies = ch_assemblies
         }
 
+        // --- QC with QUAST and Filtering ---
         QUAST(ch_screened_assemblies)
-        MASH(ch_screened_assemblies)
-        AMRFINDERPLUS(ch_screened_assemblies)
-        SPATYPER(ch_screened_assemblies)
-        SCCMEC(ch_screened_assemblies)
-        AGR_TYPING(ch_screened_assemblies)
-        PROKKA(ch_screened_assemblies)
-        ABRICATE(ch_screened_assemblies)
-        MLST(ch_screened_assemblies)
+        
+        // Apply QC filters if any are set
+        if (params.min_completeness || params.max_contamination || params.min_n50 || params.max_n50) {
+            log.info "Applying QC filters: completeness=${params.min_completeness}%, contamination=${params.max_contamination}%, N50=${params.min_n50}-${params.max_n50}"
+            QC_FILTER(QUAST.out.quast_out)
+            ch_qc_filtered = QC_FILTER.out.qc_filtered
+                .filter { sample_id, quast_dir, qc_file ->
+                    def pass = new File(qc_file).text.split('\t')[1] == 'PASS'
+                    if (!pass) {
+                        reason = new File(qc_file).text.split('\t')[8]
+                        log.warn "Sample ${sample_id} failed QC: ${reason}"
+                    }
+                    return pass
+                }
+            # For aggregation, we need: sample_id -> quast_dir (keeps metrics inside)
+            ch_quast_for_agg = QUAST.out.quast_out.map { sample_id, quast_dir, metrics -> [sample_id, quast_dir] }
+        } else {
+            log.info "No QC filters applied (all QC params are null)"
+            ch_qc_filtered = QUAST.out.quast_out.map { sample_id, quast_dir, metrics_file -> [sample_id, quast_dir] }
+            ch_quast_for_agg = QUAST.out.quast_out.map { sample_id, quast_dir, metrics_file -> [sample_id, quast_dir] }
+        }
+
+        MASH(ch_qc_filtered)
+        AMRFINDERPLUS(ch_qc_filtered)
+        SPATYPER(ch_qc_filtered)
+        SCCMEC(ch_qc_filtered)
+        AGR_TYPING(ch_qc_filtered)
+        PROKKA(ch_qc_filtered)
+        ABRICATE(ch_qc_filtered)
+        MLST(ch_qc_filtered)
 
         // --- Read-based AMR (KMA) ---
         FETCH_RESFINDER_DB()
@@ -174,7 +198,7 @@ workflow {
         // Join all outputs by sample_id
         ch_agg_in = ch_trim_log
             .join(ch_fastqc_out)
-            .join(QUAST.out)
+            .join(ch_quast_for_agg)
             .join(MLST.out)
             .join(ABRICATE.out)
             .join(AMRFINDERPLUS.out.report)
@@ -208,8 +232,12 @@ workflow {
         ch_multiqc_in = ch_multiqc_in.mix(PROKKA.out.collect())
         ch_multiqc_in = ch_multiqc_in.mix(ABRICATE.out.map{ it[1] }.collect())
         ch_multiqc_in = ch_multiqc_in.mix(MLST.out.map{ it[1] }.collect())
-        ch_multiqc_in = ch_multiqc_in.mix(QUAST.out.map{ it[1] }.collect())
-        ch_multiqc_in = ch_multiqc_in.mix(MASH.out.sketch.map{ it[1] }.collect())
+        ch_multiqc_in = ch_multiqc_in.mix(ch_qc_filtered.map{ it[1] }.collect())
+        
+        # Add QC filter summary if filters were applied
+        if (params.min_completeness || params.max_contamination || params.min_n50 || params.max_n50) {
+            QC_FILTER.out.summary.map { it -> file(it).copyTo("${params.outdir}/qc_summary.tsv") }
+        }
         
         MULTIQC(ch_multiqc_in.collect())
 }
