@@ -86,22 +86,7 @@ params {
 - Assembly stats (N50, size, completeness)
 - Typing results (MLST, Spa, SCCmec, AGR)
 - AMR profile (ABRICATE + AMRFinderPlus)
-- Species screen results
-- Failed samples + reasons
-- Downloadable tables
-
-**Implementation**:
-- Add `modules/generate_summary.nf` (Python + Jinja2)
-- Template: `templates/summary.html.j2`
-- Run at pipeline end, output: `results/summary.html`
-
-**Files**:
-- `modules/generate_summary.nf` (new)
-- `templates/summary.html.j2` (new)
-- `main.nf` (call GENERATE_SUMMARY)
-- `nextflow.config` (container: `python:3.9-slim`)
-| 1 | Species Screening | Medium | High | P0 | ✅ || 2 | SRA Retry | Low | Medium | P1 | ✅ || 3 | Configurable QC | Low | Medium | P1 | ✅ || 4 | HTML Summary | High | Medium | P2 | ⏳ |**Sprint 1**: ✅ #1 + #2 (MASH screen + SRA retry)**Sprint 2**: ✅ #3 (QC parameters)**Sprint 3**: ⏳ #4 (HTML dashboard)
----
+| 1 | Species Screening | Medium | High | P0 | ✅ || 2 | SRA Retry | Low | Medium | P1 | ✅ || 3 | Configurable QC | Low | Medium | P1 | ✅ || 4 | HTML Summary | High | Medium | P2 | ✅ |**Sprint 1**: ✅ #1 + #2 (MASH screen + SRA retry)**Sprint 2**: ✅ #3 (QC parameters)**Sprint 3**: ✅ #4 (HTML dashboard)**Implementation Status**: ✅ ALL ENHANCEMENTS COMPLETE---
 
 ## Testing Plan
 
