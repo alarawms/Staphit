@@ -100,22 +100,7 @@ params {
 - `templates/summary.html.j2` (new)
 - `main.nf` (call GENERATE_SUMMARY)
 - `nextflow.config` (container: `python:3.9-slim`)
-
----
-
-## Implementation Order
-
-| # | Enhancement | Complexity | Impact | Priority |
-|---|------------|------------|--------|----------|
-| 1 | Species Screening | Medium | High | P0 |
-| 2 | SRA Retry | Low | Medium | P1 |
-| 3 | Configurable QC | Low | Medium | P1 |
-| 4 | HTML Summary | High | Medium | P2 |
-
-**Sprint 1**: #1 + #2 (MASH screen + SRA retry)
-**Sprint 2**: #3 (QC parameters)
-**Sprint 3**: #4 (HTML dashboard)
-
+| 1 | Species Screening | Medium | High | P0 | ✅ || 2 | SRA Retry | Low | Medium | P1 | ✅ || 3 | Configurable QC | Low | Medium | P1 | ✅ || 4 | HTML Summary | High | Medium | P2 | ⏳ |**Sprint 1**: ✅ #1 + #2 (MASH screen + SRA retry)**Sprint 2**: ✅ #3 (QC parameters)**Sprint 3**: ⏳ #4 (HTML dashboard)
 ---
 
 ## Testing Plan
