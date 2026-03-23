@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Staphit Pipeline Summary</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; color: #333; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 10px; margin-bottom: 30px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        header h1 { font-size: 2.5em; margin-bottom: 10px; }
+        header p { opacity: 0.9; font-size: 1.1em; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); border-left: 4px solid #667eea; }
+        .stat-card.pass { border-left-color: #48bb78; }
+        .stat-card.fail { border-left-color: #f56565; }
+        .stat-card h3 { color: #718096; font-size: 0.9em; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 10px; }
+        .stat-card .number { font-size: 2.5em; font-weight: bold; color: #2d3748; }
+        .stat-card .label { color: #718096; font-size: 0.9em; }
+        table-container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f7fafc; font-weight: 600; color: #4a5568; text-transform: uppercase; font-size: 0.85em; }
+        tr:hover { background: #f7fafc; }
+        .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 600; }
+        .badge.pass { background: #c6f6d5; color: #22543d; }
+        .badge.fail { background: #fed7d7; color: #822727; }
+        .section-title { font-size: 1.5em; color: #2d3748; margin: 30px 0 20px 0; padding-bottom: 10px; border-bottom: 2px solid #667eea; }
+        .download-btn { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 1em; margin-top: 15px; }
+        .download-btn:hover { background: #5a67d8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🦠 Staphit Pipeline Summary</h1>
+            <p>MRSA Genomic Surveillance Platform - Results Dashboard</p>
+        </header>
+
+        <h2 class="section-title">Pipeline Overview</h2>
+        <div class="stats">
+            <div class="stat-card">
+                <h3>Total Samples</h3>
+                <div class="number">{{ samples|length }}</div>
+                <div class="label">Processed</div>
+            </div>
+            {% if screen_species %}
+            <div class="stat-card {{ 'pass' if screen_species.fail == 0 else 'fail' }}">
+                <h3>Species Screen</h3>
+                <div class="number">{{ screen_species.pass }}</div>
+                <div class="label">Passed / {{ screen_species.total }}</div>
+            </div>
+            {% endif %}
+            {% if qc_filter %}
+            <div class="stat-card {{ 'pass' if qc_filter.fail == 0 else 'fail' }}">
+                <h3>QC Filter</h3>
+                <div class="number">{{ qc_filter.pass }}</div>
+                <div class="label">Passed / {{ qc_filter.total }}</div>
+            </div>
+            {% endif %}
+        </div>
+
+        <h2 class="section-title">Sample Results</h2>
+        <div class="table-container">
+            <table id="resultsTable">
+                <thead>
+                    <tr>
+                        <th>Sample ID</th>
+                        <th>MLST</th>
+                        <th>Spa Type</th>
+                        <th>SCCmec</th>
+                        <th>AGR Type</th>
+                        <th>Total Length</th>
+                        <th>Contigs</th>
+                        <th>N50</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sample in samples %}
+                    <tr>
+                        <td><strong>{{ sample.id }}</strong></td>
+                        <td>{{ sample.get('mlst', '-') }}</td>
+                        <td>{{ sample.get('spatyper', '-') }}</td>
+                        <td>{{ sample.get('sccmec', '-') }}</td>
+                        <td>{{ sample.get('agr', '-') }}</td>
+                        <td>{{ sample.get('total_length', '-') }}</td>
+                        <td>{{ sample.get('contigs', '-') }}</td>
+                        <td>{{ sample.get('n50', '-') }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <button class="download-btn" onclick="downloadCSV()">Download CSV</button>
+        </div>
+    </div>
+
+    <script>
+        function downloadCSV() {
+            const table = document.getElementById("resultsTable");
+            let csv = [];
+            for (let i = 0; i < table.rows.length; i++) {
+                let row = [], cols = table.rows[i].cells;
+                for (let j = 0; j < cols.length; j++) {
+                    row.push(cols[j].innerText);
+                }
+                csv.push(row.join(","));
+            }
+            const blob = new Blob([csv.join("\n")], { type: "text/csv" });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "staphit_summary.csv";
+            a.click();
+        }
+    </script>
+</body>
+</html>

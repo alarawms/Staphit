@@ -25,6 +25,7 @@ include { SPATYPER } from './modules/spatyper.nf'
 include { SCCMEC } from './modules/sccmec.nf'
 include { SCREEN_SPECIES } from './modules/screen_species.nf'
 include { QC_FILTER } from './modules/qc_filter.nf'
+include { GENERATE_SUMMARY } from './modules/generate_summary.nf'
 include { AGR_TYPING } from './modules/agr_typing.nf'
 include { FETCH_RESFINDER_DB; INDEX_DB; KMA } from './modules/kma.nf'
 include { VISUALIZATION } from './modules/visualization.nf'
@@ -240,5 +241,30 @@ workflow {
         }
         
         MULTIQC(ch_multiqc_in.collect())
+
+        // --- HTML Summary Dashboard ---
+        // Prepare optional summaries
+        ch_screen_summary = Channel.empty()
+        ch_qc_summary = Channel.empty()
+        
+        if (!params.skip_species_check) {
+            ch_screen_summary = SCREEN_SPECIES.out.summary
+        }
+        
+        if (params.min_completeness || params.max_contamination || params.min_n50 || params.max_n50) {
+            ch_qc_summary = QC_FILTER.out.summary
+        }
+        
+        GENERATE_SUMMARY(
+            ch_screen_summary.collect(),
+            ch_qc_summary.collect(),
+            ch_quast_for_agg.map { it[1] }.collect(),
+            MLST.out,
+            SPATYPER.out.report,
+            SCCMEC.out.report,
+            AGR_TYPING.out.report,
+            ABRICATE.out,
+            AMRFINDERPLUS.out.report
+        )
 }
 
