@@ -26,6 +26,7 @@ include { SCCMEC } from './modules/sccmec.nf'
 include { AGR_TYPING } from './modules/agr_typing.nf'
 include { FETCH_RESFINDER_DB; INDEX_DB; KMA } from './modules/kma.nf'
 include { VISUALIZATION } from './modules/visualization.nf'
+include { VALIDATE_METADATA } from './modules/validate_metadata.nf'
 
 include { SEARCH_SRA } from './modules/search_sra.nf'
 include { FETCH_METADATA } from './modules/fetch_metadata.nf'
@@ -51,14 +52,19 @@ workflow {
             ch_metadata_json = FETCH_METADATA.out.metadata_json
         } else {
             log.info "Using provided samplesheet: ${params.input}"
-            // If not searching, we expect the file to exist.
             input_csv = Channel.fromPath(params.input, checkIfExists: true)
-            
-            // Try to find metadata.json if available locally, otherwise create empty one
-            if (file('metadata.json').exists()) {
+
+            if (params.metadata) {
+                log.info "Validating user-provided metadata: ${params.metadata}"
+                ch_meta_csv = Channel.fromPath(params.metadata, checkIfExists: true)
+                ch_abg_csv = params.antibiogram
+                    ? Channel.fromPath(params.antibiogram, checkIfExists: true)
+                    : Channel.of(file('NO_ANTIBIOGRAM'))
+                VALIDATE_METADATA(ch_meta_csv, ch_abg_csv, input_csv)
+                ch_metadata_json = VALIDATE_METADATA.out.json
+            } else if (file('metadata.json').exists()) {
                 ch_metadata_json = Channel.fromPath('metadata.json')
             } else {
-                // Create a dummy metadata file so the aggregator can still run
                 def dummy = file("${workDir}/metadata.json")
                 dummy.text = '[]'
                 ch_metadata_json = Channel.of(dummy)
