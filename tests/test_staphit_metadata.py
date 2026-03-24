@@ -75,3 +75,83 @@ class TestTemplate:
             assert header[0] == 'sample_id'
             assert 'antibiotic' in header
             assert 'resistance_phenotype' in header
+
+
+class TestValidate:
+    def _write_metadata(self, tmpdir, rows):
+        path = os.path.join(tmpdir, 'metadata.csv')
+        with open(path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+
+    def _write_antibiogram(self, tmpdir, rows):
+        path = os.path.join(tmpdir, 'antibiogram.csv')
+        with open(path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+
+    def test_valid_metadata(self, tmpdir):
+        meta = self._write_metadata(tmpdir, [{'sample_id': 'ID00001', 'organism': 'Staphylococcus aureus', 'collection_date': '2024-03-15', 'geo_loc_country': 'Saudi Arabia', 'geo_loc_region': 'Riyadh', 'host': 'Homo sapiens', 'isolation_source': 'blood'}])
+        result = subprocess.run(['python', TOOL, 'validate', '--metadata', meta], capture_output=True, text=True)
+        assert result.returncode == 0
+
+    def test_missing_required_warns(self, tmpdir):
+        meta = self._write_metadata(tmpdir, [{'sample_id': 'ID00001', 'organism': 'Staphylococcus aureus', 'collection_date': '', 'geo_loc_country': 'Saudi Arabia', 'geo_loc_region': 'Riyadh', 'host': 'Homo sapiens', 'isolation_source': 'blood'}])
+        result = subprocess.run(['python', TOOL, 'validate', '--metadata', meta], capture_output=True, text=True)
+        assert result.returncode == 0
+        assert 'WARNING' in result.stderr
+        assert 'collection_date' in result.stderr
+
+    def test_invalid_date_warns(self, tmpdir):
+        meta = self._write_metadata(tmpdir, [{'sample_id': 'ID00001', 'organism': 'Staphylococcus aureus', 'collection_date': '15/03/2024', 'geo_loc_country': 'Saudi Arabia', 'geo_loc_region': 'Riyadh', 'host': 'Homo sapiens', 'isolation_source': 'blood'}])
+        result = subprocess.run(['python', TOOL, 'validate', '--metadata', meta], capture_output=True, text=True)
+        assert result.returncode == 0
+        assert 'WARNING' in result.stderr
+        assert 'date' in result.stderr.lower()
+
+    def test_invalid_sex_warns(self, tmpdir):
+        meta = self._write_metadata(tmpdir, [{'sample_id': 'ID00001', 'organism': 'Staphylococcus aureus', 'collection_date': '2024-03-15', 'geo_loc_country': 'Saudi Arabia', 'geo_loc_region': 'Riyadh', 'host': 'Homo sapiens', 'isolation_source': 'blood', 'host_sex': 'M'}])
+        result = subprocess.run(['python', TOOL, 'validate', '--metadata', meta], capture_output=True, text=True)
+        assert result.returncode == 0
+        assert 'WARNING' in result.stderr
+        assert 'host_sex' in result.stderr
+
+    def test_samplesheet_crossref(self, tmpdir, samplesheet):
+        meta = self._write_metadata(tmpdir, [{'sample_id': 'ID99999', 'organism': 'Staphylococcus aureus', 'collection_date': '2024-03-15', 'geo_loc_country': 'Saudi Arabia', 'geo_loc_region': 'Riyadh', 'host': 'Homo sapiens', 'isolation_source': 'blood'}])
+        result = subprocess.run(['python', TOOL, 'validate', '--metadata', meta, '--samplesheet', samplesheet], capture_output=True, text=True)
+        assert result.returncode == 0
+        assert 'WARNING' in result.stderr
+        assert 'ID99999' in result.stderr
+
+    def test_antibiogram_validation(self, tmpdir):
+        meta = self._write_metadata(tmpdir, [{'sample_id': 'ID00001', 'organism': 'Staphylococcus aureus', 'collection_date': '2024-03-15', 'geo_loc_country': 'Saudi Arabia', 'geo_loc_region': 'Riyadh', 'host': 'Homo sapiens', 'isolation_source': 'blood'}])
+        abg = self._write_antibiogram(tmpdir, [{'sample_id': 'ID00001', 'antibiotic': 'oxacillin', 'resistance_phenotype': 'R', 'measurement': '4', 'measurement_sign': '=', 'measurement_units': 'mg/L', 'laboratory_typing_method': 'MIC', 'testing_standard': 'CLSI'}])
+        result = subprocess.run(['python', TOOL, 'validate', '--metadata', meta, '--antibiogram', abg], capture_output=True, text=True)
+        assert result.returncode == 0
+
+    def test_antibiogram_orphan_warns(self, tmpdir):
+        meta = self._write_metadata(tmpdir, [{'sample_id': 'ID00001', 'organism': 'Staphylococcus aureus', 'collection_date': '2024-03-15', 'geo_loc_country': 'Saudi Arabia', 'geo_loc_region': 'Riyadh', 'host': 'Homo sapiens', 'isolation_source': 'blood'}])
+        abg = self._write_antibiogram(tmpdir, [{'sample_id': 'ID00099', 'antibiotic': 'oxacillin', 'resistance_phenotype': 'R', 'measurement': '4', 'measurement_sign': '=', 'measurement_units': 'mg/L', 'laboratory_typing_method': 'MIC', 'testing_standard': 'CLSI'}])
+        result = subprocess.run(['python', TOOL, 'validate', '--metadata', meta, '--antibiogram', abg], capture_output=True, text=True)
+        assert result.returncode == 0
+        assert 'WARNING' in result.stderr
+        assert 'ID00099' in result.stderr
+
+    def test_invalid_sir_warns(self, tmpdir):
+        meta = self._write_metadata(tmpdir, [{'sample_id': 'ID00001', 'organism': 'Staphylococcus aureus', 'collection_date': '2024-03-15', 'geo_loc_country': 'Saudi Arabia', 'geo_loc_region': 'Riyadh', 'host': 'Homo sapiens', 'isolation_source': 'blood'}])
+        abg = self._write_antibiogram(tmpdir, [{'sample_id': 'ID00001', 'antibiotic': 'oxacillin', 'resistance_phenotype': 'X', 'measurement': '4', 'measurement_sign': '=', 'measurement_units': 'mg/L', 'laboratory_typing_method': 'MIC', 'testing_standard': 'CLSI'}])
+        result = subprocess.run(['python', TOOL, 'validate', '--metadata', meta, '--antibiogram', abg], capture_output=True, text=True)
+        assert result.returncode == 0
+        assert 'WARNING' in result.stderr
+        assert 'resistance_phenotype' in result.stderr
+
+    def test_malformed_csv_fails(self, tmpdir):
+        bad_path = os.path.join(tmpdir, 'bad.csv')
+        with open(bad_path, 'w') as f:
+            f.write('not,a,valid\x00csv\nwith\x00nulls')
+        result = subprocess.run(['python', TOOL, 'validate', '--metadata', bad_path], capture_output=True, text=True)
+        assert result.returncode == 1

@@ -43,6 +43,145 @@ DEFAULTS = {
     'host': 'Homo sapiens',
 }
 
+VALID_SEX = {'male', 'female', 'unknown', ''}
+VALID_SIR = {'R', 'I', 'S', 'NS', 'SDD', ''}
+VALID_SIGN = {'<', '<=', '=', '>', '>=', ''}
+DATE_PATTERN = re.compile(r'^\d{4}(-\d{2}(-\d{2})?)?$')
+
+
+def _load_specimen_vocab():
+    """Load specimen type vocabulary, mapping raw_value.lower() -> standardized_value."""
+    vocab = {}
+    vocab_path = os.path.join(VOCAB_DIR, 'specimen_types.tsv')
+    if os.path.exists(vocab_path):
+        with open(vocab_path) as f:
+            reader = csv.DictReader(f, delimiter='\t')
+            for row in reader:
+                raw = row.get('raw_value', '').strip().lower()
+                std = row.get('standardized_value', '').strip()
+                if raw:
+                    vocab[raw] = std
+    return vocab
+
+
+def cmd_validate(args):
+    """Validate metadata and optional antibiogram CSVs."""
+    warnings = []
+
+    # Read metadata CSV
+    try:
+        with open(args.metadata, newline='') as f:
+            content = f.read()
+            if '\x00' in content:
+                print("ERROR: Metadata file contains null bytes", file=sys.stderr)
+                sys.exit(1)
+        with open(args.metadata, newline='') as f:
+            reader = csv.DictReader(f)
+            meta_rows = list(reader)
+            meta_fields = reader.fieldnames or []
+    except Exception as e:
+        print(f"ERROR: Could not parse metadata CSV: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Check required columns exist
+    for col in REQUIRED_METADATA:
+        if col not in meta_fields:
+            warnings.append(f"WARNING: Required column '{col}' missing from metadata header")
+
+    # Collect metadata sample_ids
+    meta_sample_ids = set()
+
+    # Load specimen vocab
+    specimen_vocab = _load_specimen_vocab()
+
+    for i, row in enumerate(meta_rows, start=2):  # row 2 = first data row (1-indexed, after header)
+        sid = row.get('sample_id', '')
+        meta_sample_ids.add(sid)
+
+        # Check required fields are non-empty
+        for col in REQUIRED_METADATA:
+            if col in row and row[col].strip() == '':
+                warnings.append(f"WARNING: Row {i}, sample '{sid}': required field '{col}' is empty")
+
+        # Validate collection_date format (ISO 8601: YYYY, YYYY-MM, YYYY-MM-DD)
+        date_val = row.get('collection_date', '').strip()
+        if date_val and not DATE_PATTERN.match(date_val):
+            warnings.append(f"WARNING: Row {i}, sample '{sid}': collection_date '{date_val}' is not valid ISO 8601 date format (expected YYYY, YYYY-MM, or YYYY-MM-DD)")
+
+        # Validate host_sex if present
+        sex_val = row.get('host_sex', '').strip()
+        if 'host_sex' in row and sex_val.lower() not in VALID_SEX:
+            warnings.append(f"WARNING: Row {i}, sample '{sid}': host_sex '{sex_val}' is not valid (expected: male, female, unknown, or empty)")
+
+        # Check isolation_source against specimen vocab
+        source_val = row.get('isolation_source', '').strip()
+        if source_val and specimen_vocab and source_val.lower() not in specimen_vocab:
+            warnings.append(f"WARNING: Row {i}, sample '{sid}': isolation_source '{source_val}' not found in controlled vocabulary")
+
+    # Cross-reference with samplesheet if provided
+    if args.samplesheet:
+        try:
+            with open(args.samplesheet, newline='') as f:
+                reader = csv.DictReader(f)
+                sheet_ids = {row['sample'] for row in reader}
+            for sid in meta_sample_ids:
+                if sid and sid not in sheet_ids:
+                    warnings.append(f"WARNING: Metadata sample '{sid}' not found in samplesheet")
+        except Exception as e:
+            warnings.append(f"WARNING: Could not read samplesheet: {e}")
+
+    # Validate antibiogram if provided
+    if args.antibiogram:
+        try:
+            with open(args.antibiogram, newline='') as f:
+                content = f.read()
+                if '\x00' in content:
+                    print("ERROR: Antibiogram file contains null bytes", file=sys.stderr)
+                    sys.exit(1)
+            with open(args.antibiogram, newline='') as f:
+                reader = csv.DictReader(f)
+                abg_rows = list(reader)
+                abg_fields = reader.fieldnames or []
+        except Exception as e:
+            print(f"ERROR: Could not parse antibiogram CSV: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        # Check required antibiogram columns
+        for col in REQUIRED_ANTIBIOGRAM:
+            if col not in abg_fields:
+                warnings.append(f"WARNING: Required column '{col}' missing from antibiogram header")
+
+        for i, row in enumerate(abg_rows, start=2):
+            sid = row.get('sample_id', '')
+
+            # Check required fields are non-empty
+            for col in REQUIRED_ANTIBIOGRAM:
+                if col in row and row[col].strip() == '':
+                    warnings.append(f"WARNING: Antibiogram row {i}, sample '{sid}': required field '{col}' is empty")
+
+            # Validate resistance_phenotype (SIR values)
+            sir_val = row.get('resistance_phenotype', '').strip()
+            if sir_val and sir_val not in VALID_SIR:
+                warnings.append(f"WARNING: Antibiogram row {i}, sample '{sid}': resistance_phenotype '{sir_val}' is not valid (expected: R, I, S, NS, SDD, or empty)")
+
+            # Validate measurement_sign
+            sign_val = row.get('measurement_sign', '').strip()
+            if sign_val and sign_val not in VALID_SIGN:
+                warnings.append(f"WARNING: Antibiogram row {i}, sample '{sid}': measurement_sign '{sign_val}' is not valid")
+
+            # Check for orphan sample_ids (in antibiogram but not in metadata)
+            if sid and sid not in meta_sample_ids:
+                warnings.append(f"WARNING: Antibiogram sample '{sid}' not found in metadata")
+
+    # Print all warnings to stderr
+    for w in warnings:
+        print(w, file=sys.stderr)
+
+    if warnings:
+        print(f"\nValidation complete: {len(warnings)} warning(s) found", file=sys.stderr)
+    else:
+        print("Validation complete: no issues found", file=sys.stderr)
+
 
 def cmd_template(args):
     """Generate metadata and antibiogram CSV templates."""
@@ -92,9 +231,17 @@ def main():
     p_template.add_argument('--antibiogram', action='store_true', help='Also generate antibiogram template')
     p_template.add_argument('--output-dir', help='Output directory (default: current directory)')
 
+    # validate
+    p_validate = subparsers.add_parser('validate', help='Validate metadata CSVs')
+    p_validate.add_argument('--metadata', required=True, help='Metadata CSV file')
+    p_validate.add_argument('--antibiogram', help='Antibiogram CSV file')
+    p_validate.add_argument('--samplesheet', help='Samplesheet CSV for cross-reference')
+
     args = parser.parse_args()
     if args.command == 'template':
         cmd_template(args)
+    elif args.command == 'validate':
+        cmd_validate(args)
 
 
 if __name__ == '__main__':
