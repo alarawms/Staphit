@@ -1,6 +1,7 @@
 """Tests for staphit-metadata CLI tool."""
 import subprocess
 import csv
+import json
 import os
 import tempfile
 import pytest
@@ -155,3 +156,59 @@ class TestValidate:
             f.write('not,a,valid\x00csv\nwith\x00nulls')
         result = subprocess.run(['python', TOOL, 'validate', '--metadata', bad_path], capture_output=True, text=True)
         assert result.returncode == 1
+
+
+class TestNormalize:
+    def _write_metadata(self, tmpdir, rows):
+        path = os.path.join(tmpdir, 'metadata.csv')
+        with open(path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+
+    def _write_antibiogram(self, tmpdir, rows):
+        path = os.path.join(tmpdir, 'antibiogram.csv')
+        with open(path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+        return path
+
+    def test_normalize_metadata_only(self, tmpdir):
+        meta = self._write_metadata(tmpdir, [{'sample_id': 'ID00001', 'organism': 'Staphylococcus aureus', 'collection_date': '2024-03-15', 'geo_loc_country': 'Saudi Arabia', 'geo_loc_region': 'Riyadh', 'host': 'Homo sapiens', 'isolation_source': 'blood', 'infection_origin': 'hospital'}])
+        out = os.path.join(tmpdir, 'metadata.json')
+        result = subprocess.run(['python', TOOL, 'normalize', '--metadata', meta, '-o', out], capture_output=True, text=True)
+        assert result.returncode == 0
+        with open(out) as f:
+            data = json.load(f)
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]['sample_id'] == 'ID00001'
+        assert data[0]['collection_date'] == '2024-03-15'
+        assert data[0]['geo_loc_country'] == 'Saudi Arabia'
+        assert 'antibiogram' not in data[0] or data[0]['antibiogram'] == []
+
+    def test_normalize_with_antibiogram(self, tmpdir):
+        meta = self._write_metadata(tmpdir, [{'sample_id': 'ID00001', 'organism': 'Staphylococcus aureus', 'collection_date': '2024-03-15', 'geo_loc_country': 'Saudi Arabia', 'geo_loc_region': 'Riyadh', 'host': 'Homo sapiens', 'isolation_source': 'blood'}])
+        abg = self._write_antibiogram(tmpdir, [
+            {'sample_id': 'ID00001', 'antibiotic': 'oxacillin', 'resistance_phenotype': 'R', 'measurement': '4', 'measurement_sign': '=', 'measurement_units': 'mg/L', 'laboratory_typing_method': 'MIC', 'testing_standard': 'CLSI', 'testing_standard_version': '', 'platform': ''},
+            {'sample_id': 'ID00001', 'antibiotic': 'vancomycin', 'resistance_phenotype': 'S', 'measurement': '1', 'measurement_sign': '=', 'measurement_units': 'mg/L', 'laboratory_typing_method': 'MIC', 'testing_standard': 'CLSI', 'testing_standard_version': '', 'platform': ''},
+        ])
+        out = os.path.join(tmpdir, 'metadata.json')
+        result = subprocess.run(['python', TOOL, 'normalize', '--metadata', meta, '--antibiogram', abg, '-o', out], capture_output=True, text=True)
+        assert result.returncode == 0
+        with open(out) as f:
+            data = json.load(f)
+        assert len(data[0]['antibiogram']) == 2
+        assert data[0]['antibiogram'][0]['antibiotic'] == 'oxacillin'
+        assert data[0]['antibiogram'][0]['sir'] == 'R'
+        assert data[0]['antibiogram'][1]['antibiotic'] == 'vancomycin'
+
+    def test_normalize_uses_run_id_key(self, tmpdir):
+        meta = self._write_metadata(tmpdir, [{'sample_id': 'ID00001', 'organism': 'Staphylococcus aureus', 'collection_date': '2024-03-15', 'geo_loc_country': 'Saudi Arabia', 'geo_loc_region': 'Riyadh', 'host': 'Homo sapiens', 'isolation_source': 'blood'}])
+        out = os.path.join(tmpdir, 'metadata.json')
+        subprocess.run(['python', TOOL, 'normalize', '--metadata', meta, '-o', out], capture_output=True, text=True)
+        with open(out) as f:
+            data = json.load(f)
+        assert data[0]['run_id'] == 'ID00001'

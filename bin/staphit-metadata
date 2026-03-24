@@ -183,6 +183,52 @@ def cmd_validate(args):
         print("Validation complete: no issues found", file=sys.stderr)
 
 
+def cmd_normalize(args):
+    """Convert validated metadata + antibiogram CSVs to JSON."""
+    try:
+        with open(args.metadata, newline='') as f:
+            reader = csv.DictReader(f)
+            meta_rows = list(reader)
+    except Exception as e:
+        print(f"ERROR: Cannot parse metadata file: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    abg_by_sample = {}
+    if args.antibiogram:
+        try:
+            with open(args.antibiogram, newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    sid = row.get('sample_id', '').strip()
+                    if sid:
+                        abg_by_sample.setdefault(sid, []).append({
+                            'antibiotic': row.get('antibiotic', '').strip(),
+                            'sir': row.get('resistance_phenotype', '').strip(),
+                            'mic': row.get('measurement', '').strip(),
+                            'mic_sign': row.get('measurement_sign', '').strip(),
+                            'units': row.get('measurement_units', '').strip(),
+                            'method': row.get('laboratory_typing_method', '').strip(),
+                            'standard': row.get('testing_standard', '').strip(),
+                        })
+        except Exception as e:
+            print(f"ERROR: Cannot parse antibiogram file: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    output = []
+    for row in meta_rows:
+        sid = row.get('sample_id', '').strip()
+        record = {k.strip(): v.strip() for k, v in row.items() if v and v.strip()}
+        record['run_id'] = sid
+        record['antibiogram'] = abg_by_sample.get(sid, [])
+        output.append(record)
+
+    out_path = args.output or '/dev/stdout'
+    with open(out_path, 'w') as f:
+        json.dump(output, f, indent=2)
+
+    print(f"Normalized {len(output)} samples to {out_path}", file=sys.stderr)
+
+
 def cmd_template(args):
     """Generate metadata and antibiogram CSV templates."""
     output_dir = args.output_dir or '.'
@@ -237,11 +283,19 @@ def main():
     p_validate.add_argument('--antibiogram', help='Antibiogram CSV file')
     p_validate.add_argument('--samplesheet', help='Samplesheet CSV for cross-reference')
 
+    # normalize
+    p_normalize = subparsers.add_parser('normalize', help='Convert metadata CSVs to JSON')
+    p_normalize.add_argument('--metadata', required=True, help='Metadata CSV file')
+    p_normalize.add_argument('--antibiogram', help='Antibiogram CSV file')
+    p_normalize.add_argument('-o', '--output', help='Output JSON file (default: stdout)')
+
     args = parser.parse_args()
     if args.command == 'template':
         cmd_template(args)
     elif args.command == 'validate':
         cmd_validate(args)
+    elif args.command == 'normalize':
+        cmd_normalize(args)
 
 
 if __name__ == '__main__':
