@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""staphit-metadata: FAIR metadata management for the Staphit pipeline."""
+import argparse
+import csv
+import json
+import os
+import re
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+ASSETS_DIR = os.path.join(PROJECT_DIR, 'assets')
+VOCAB_DIR = os.path.join(PROJECT_DIR, 'metadata', 'controlled_vocabularies')
+
+METADATA_COLUMNS = [
+    'sample_id', 'organism', 'collection_date', 'geo_loc_country', 'geo_loc_region',
+    'host', 'isolation_source', 'collected_by', 'host_age', 'host_sex',
+    'host_disease', 'host_body_site', 'patient_status', 'infection_origin',
+    'mrsa_status', 'strain', 'lat_lon', 'sequenced_by', 'sequencing_platform',
+    'pvl_status', 'biosample_accession', 'sra_accession', 'outbreak_id',
+    'travel_history', 'icu_admission'
+]
+
+REQUIRED_METADATA = [
+    'sample_id', 'organism', 'collection_date', 'geo_loc_country',
+    'geo_loc_region', 'host', 'isolation_source'
+]
+
+ANTIBIOGRAM_COLUMNS = [
+    'sample_id', 'antibiotic', 'resistance_phenotype', 'measurement',
+    'measurement_sign', 'measurement_units', 'laboratory_typing_method',
+    'testing_standard', 'testing_standard_version', 'platform'
+]
+
+REQUIRED_ANTIBIOGRAM = [
+    'sample_id', 'antibiotic', 'resistance_phenotype', 'measurement',
+    'measurement_sign', 'measurement_units', 'laboratory_typing_method',
+    'testing_standard'
+]
+
+DEFAULTS = {
+    'organism': 'Staphylococcus aureus',
+    'host': 'Homo sapiens',
+}
+
+
+def cmd_template(args):
+    """Generate metadata and antibiogram CSV templates."""
+    output_dir = args.output_dir or '.'
+    os.makedirs(output_dir, exist_ok=True)
+
+    sample_ids = []
+    if args.samplesheet:
+        with open(args.samplesheet) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                sample_ids.append(row['sample'])
+
+    # Write metadata template
+    meta_path = os.path.join(output_dir, 'sample_metadata.csv')
+    with open(meta_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=METADATA_COLUMNS)
+        writer.writeheader()
+        for sid in sample_ids:
+            row = {col: '' for col in METADATA_COLUMNS}
+            row['sample_id'] = sid
+            for col, default in DEFAULTS.items():
+                row[col] = default
+            writer.writerow(row)
+
+    print(f"Metadata template written to {meta_path} ({len(sample_ids)} samples)", file=sys.stderr)
+
+    # Write antibiogram template if requested
+    if args.antibiogram:
+        abg_path = os.path.join(output_dir, 'antibiogram.csv')
+        with open(abg_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=ANTIBIOGRAM_COLUMNS)
+            writer.writeheader()
+        print(f"Antibiogram template written to {abg_path}", file=sys.stderr)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='staphit-metadata',
+        description='FAIR metadata management for the Staphit MRSA surveillance pipeline'
+    )
+    subparsers = parser.add_subparsers(dest='command', required=True)
+
+    # template
+    p_template = subparsers.add_parser('template', help='Generate metadata CSV templates')
+    p_template.add_argument('--samplesheet', help='Samplesheet CSV to pre-fill sample IDs')
+    p_template.add_argument('--antibiogram', action='store_true', help='Also generate antibiogram template')
+    p_template.add_argument('--output-dir', help='Output directory (default: current directory)')
+
+    args = parser.parse_args()
+    if args.command == 'template':
+        cmd_template(args)
+
+
+if __name__ == '__main__':
+    main()
