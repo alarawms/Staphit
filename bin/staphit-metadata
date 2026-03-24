@@ -48,6 +48,305 @@ VALID_SIR = {'R', 'I', 'S', 'NS', 'SDD', ''}
 VALID_SIGN = {'<', '<=', '=', '>', '>=', ''}
 DATE_PATTERN = re.compile(r'^\d{4}(-\d{2}(-\d{2})?)?$')
 
+# Pattern for parsing Vitek 2 SIR:MIC cells like "R:>= 4", "S:<= 0.25", "I:64*"
+_VITEK_CELL_RE = re.compile(
+    r'^([RIS]):'           # SIR interpretation
+    r'(>=|<=|>|<)?\s*'     # optional sign (with optional space after)
+    r'(.+?)$'              # measurement value (rest of string)
+)
+
+CONVERT_OUTPUT_COLUMNS = ANTIBIOGRAM_COLUMNS + ['aes_modified', 'deduced']
+
+# Antibiotics that use Screen method rather than MIC
+_SCREEN_ANTIBIOTICS = {'Cefoxitin'}
+
+
+def _parse_vitek_cell(value):
+    """Parse a Vitek 2 wide-format cell like 'R:>= 4' or 'I:64*'.
+
+    Returns a dict with keys: sir, measurement, sign, aes_modified, deduced.
+    Returns None for empty cells.
+    """
+    if not value or not value.strip():
+        return None
+    value = value.strip()
+    m = _VITEK_CELL_RE.match(value)
+    if not m:
+        return None
+
+    sir = m.group(1)
+    sign = m.group(2) or ''
+    measurement = m.group(3)
+
+    # Check for AES modification flag (trailing *)
+    aes_modified = measurement.endswith('*')
+    if aes_modified:
+        measurement = measurement[:-1]
+
+    # POS/NEG are screen results — no sign decomposition
+    if measurement in ('POS', 'NEG'):
+        sign = '='
+    elif not sign:
+        sign = '='
+
+    return {
+        'sir': sir,
+        'measurement': measurement,
+        'sign': sign,
+        'aes_modified': aes_modified,
+        'deduced': False,
+    }
+
+
+def _parse_pdf_mic_interp(mic_raw, interp_raw):
+    """Parse raw MIC and interpretation from a Vitek 2 PDF into structured result."""
+    aes_modified = False
+    deduced = False
+
+    mic = mic_raw.strip()
+    interp = interp_raw.strip()
+
+    # AES flag on MIC (trailing *)
+    if mic.endswith('*'):
+        aes_modified = True
+        mic = mic[:-1]
+
+    # AES flag on interpretation (* prefix)
+    if interp.startswith('*'):
+        aes_modified = True
+        interp = interp[1:]
+
+    # Deduced flag (+ or -)
+    if interp in ('+', '-'):
+        deduced = True
+        sir = 'R' if mic == 'POS' else 'S' if mic == 'NEG' else ''
+    else:
+        sir = interp
+
+    # Parse sign from MIC
+    sign_match = re.match(r'^(>=|<=|>|<)\s*(.+)$', mic)
+    if sign_match:
+        sign = sign_match.group(1)
+        measurement = sign_match.group(2)
+    elif mic in ('POS', 'NEG'):
+        sign = '='
+        measurement = mic
+    else:
+        sign = '='
+        measurement = mic
+
+    return {
+        'sir': sir,
+        'measurement': measurement,
+        'sign': sign,
+        'aes_modified': aes_modified,
+        'deduced': deduced,
+    }
+
+
+# Regex components for PDF AST table parsing
+_PDF_MIC = r'((?:>=|<=)\s*\d+\.?\d*\*?|\d+\.?\d*\*?|POS|NEG)'
+_PDF_INTERP = r'(\*?[RIS]|\+|-)'
+
+
+def _parse_single_vitek_pdf(pdf_path):
+    """Parse one Vitek 2 AST-P580 PDF. Returns (sample_id, list_of_result_dicts)."""
+    try:
+        import pdfplumber
+    except ImportError:
+        print("ERROR: pdfplumber is required for PDF parsing. Install with: pip install pdfplumber",
+              file=sys.stderr)
+        sys.exit(1)
+
+    text = ''
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                t = page.extract_text()
+                if t:
+                    text += t + '\n'
+    except Exception:
+        return None, []
+
+    # Extract isolate ID from text or filename
+    id_match = re.search(r'Isolate:\s*ID(\d+)-(\d+)', text)
+    if not id_match:
+        fname = os.path.basename(pdf_path)
+        id_match = re.search(r'Isolate_ID(\d+)-(\d+)', fname)
+    if not id_match:
+        return None, []
+
+    sample_id = f'ID{int(id_match.group(1)):05d}'
+
+    # Find AST table block
+    ast_start = text.find('Antimicrobial MIC Interpretation Antimicrobial MIC Interpretation')
+    if ast_start == -1:
+        return sample_id, []
+    ast_end = text.find('+= Deduced drug', ast_start)
+    if ast_end == -1:
+        ast_end = len(text)
+    ast = text[ast_start:ast_end]
+
+    MIC = _PDF_MIC
+    INTERP = _PDF_INTERP
+    results = []
+
+    # --- Simple drugs (single regex match each) ---
+    simple_drugs = [
+        ('CefoxitinScreen', 'Cefoxitin'),
+        ('Benzylpenicillin', 'Benzylpenicillin'),
+        ('Oxacillin', 'Oxacillin'),
+        ('Gentamicin', 'Gentamicin'),
+        ('Tobramycin', 'Tobramycin'),
+        ('Levofloxacin', 'Levofloxacin'),
+        ('Moxifloxacin', 'Moxifloxacin'),
+        ('Erythromycin', 'Erythromycin'),
+        ('Linezolid', 'Linezolid'),
+        ('Teicoplanin', 'Teicoplanin'),
+        ('Vancomycin', 'Vancomycin'),
+        ('Tetracycline', 'Tetracycline'),
+        ('Tigecycline', 'Tigecycline'),
+        ('Nitrofurantoin', 'Nitrofurantoin'),
+        ('FusidicAcid', 'Fusidic Acid'),
+        ('Rifampicin', 'Rifampicin'),
+    ]
+    for pdf_name, display_name in simple_drugs:
+        m = re.search(pdf_name + r'\s+' + MIC + r'\s+' + INTERP, ast)
+        if m:
+            results.append((display_name, m.group(1), m.group(2)))
+
+    # --- ICR (Inducible Clindamycin Resistance) ---
+    icr_match = re.search(
+        r'Inducible\s+Clindamycin\s+' + MIC + r'\s+' + INTERP, ast)
+    if icr_match:
+        results.append(('Inducible Clindamycin Resistance',
+                         icr_match.group(1), icr_match.group(2)))
+
+    # --- Standalone Clindamycin (not ICR) ---
+    for m in re.finditer(r'Clindamycin\s+' + MIC + r'\s+' + INTERP, ast):
+        prefix = ast[max(0, m.start() - 20):m.start()]
+        if 'Inducible' not in prefix and 'nducible' not in prefix:
+            results.append(('Clindamycin', m.group(1), m.group(2)))
+            break
+
+    # --- Trimethoprim/Sulfamethoxazole (name wraps across lines) ---
+    tmp_match = re.search(
+        r'Trimethoprim/Sulfamethoxaz\w*\s+' + MIC + r'\s+' + INTERP, ast)
+    if tmp_match:
+        results.append(('Trimethoprim/Sulfamethoxazole',
+                         tmp_match.group(1), tmp_match.group(2)))
+    else:
+        # Right column result on same line as Clindamycin: "Clindamycin MIC1 INTERP1 MIC2 INTERP2"
+        for m in re.finditer(
+            r'Clindamycin\s+' + MIC + r'\s+' + INTERP + r'\s+' + MIC + r'\s+' + INTERP, ast
+        ):
+            prefix = ast[max(0, m.start() - 20):m.start()]
+            if 'Inducible' not in prefix:
+                results.append(('Trimethoprim/Sulfamethoxazole',
+                                 m.group(3), m.group(4)))
+                break
+
+    # Convert raw tuples to structured dicts
+    parsed = []
+    for drug_name, mic_raw, interp_raw in results:
+        p = _parse_pdf_mic_interp(mic_raw, interp_raw)
+        is_screen = (p['measurement'] in ('POS', 'NEG'))
+        if is_screen:
+            method = 'Screen'
+            units = 'screen'
+        else:
+            method = 'MIC'
+            units = 'mg/L'
+
+        parsed.append({
+            'sample_id': sample_id,
+            'antibiotic': drug_name,
+            'resistance_phenotype': p['sir'],
+            'measurement': p['measurement'],
+            'measurement_sign': p['sign'],
+            'measurement_units': units,
+            'laboratory_typing_method': method,
+            'testing_standard': 'CLSI',
+            'testing_standard_version': '',
+            'platform': 'Vitek 2',
+            'aes_modified': 'true' if p['aes_modified'] else '',
+            'deduced': 'true' if p['deduced'] else '',
+        })
+
+    return sample_id, parsed
+
+
+def _convert_vitek_pdf(input_dir, output_path):
+    """Convert a directory of Vitek 2 PDFs to long-format antibiogram CSV."""
+    import glob as globmod
+
+    pdf_files = sorted(globmod.glob(os.path.join(input_dir, '*.pdf')))
+    if not pdf_files:
+        print(f"ERROR: No PDF files found in {input_dir}", file=sys.stderr)
+        sys.exit(1)
+
+    # Deduplicate: prefer non-kw24533 versions, lowest culture suffix (-1 over -2)
+    best_pdf = {}  # sample_id -> (culture_num, pdf_path)
+    for pdf_path in pdf_files:
+        fname = os.path.basename(pdf_path)
+        # Skip kw24533 duplicates
+        if '-kw24533' in fname:
+            continue
+        m = re.search(r'Isolate_ID(\d+)-(\d+)', fname)
+        if not m:
+            continue
+        sample_id = f'ID{int(m.group(1)):05d}'
+        culture_num = int(m.group(2))
+        if sample_id not in best_pdf or culture_num < best_pdf[sample_id][0]:
+            best_pdf[sample_id] = (culture_num, pdf_path)
+
+    # Also index alternate culture PDFs as fallbacks
+    alt_pdfs = {}  # sample_id -> [(culture_num, pdf_path), ...]
+    for pdf_path in pdf_files:
+        fname = os.path.basename(pdf_path)
+        if '-kw24533' in fname:
+            continue
+        m = re.search(r'Isolate_ID(\d+)-(\d+)', fname)
+        if not m:
+            continue
+        sample_id = f'ID{int(m.group(1)):05d}'
+        culture_num = int(m.group(2))
+        alt_pdfs.setdefault(sample_id, []).append((culture_num, pdf_path))
+
+    all_rows = []
+    errors = []
+    for sample_id in sorted(best_pdf):
+        _, pdf_path = best_pdf[sample_id]
+        sid, rows = _parse_single_vitek_pdf(pdf_path)
+        if rows:
+            all_rows.extend(rows)
+        else:
+            # Try alternate culture PDFs
+            found = False
+            for cn, alt_path in sorted(alt_pdfs.get(sample_id, [])):
+                if alt_path == pdf_path:
+                    continue
+                sid, rows = _parse_single_vitek_pdf(alt_path)
+                if rows:
+                    all_rows.extend(rows)
+                    found = True
+                    break
+            if not found:
+                errors.append(os.path.basename(pdf_path))
+
+    out_path = output_path or '/dev/stdout'
+    with open(out_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=CONVERT_OUTPUT_COLUMNS)
+        writer.writeheader()
+        writer.writerows(all_rows)
+
+    n_samples = len({r['sample_id'] for r in all_rows})
+    print(f"Converted {n_samples} samples, {len(all_rows)} rows from "
+          f"{len(best_pdf)} PDFs to {out_path}", file=sys.stderr)
+    if errors:
+        print(f"WARNING: {len(errors)} PDFs had no AST data: {', '.join(errors[:5])}{'...' if len(errors) > 5 else ''}",
+              file=sys.stderr)
+
 
 def _load_specimen_vocab():
     """Load specimen type vocabulary, mapping raw_value.lower() -> standardized_value."""
@@ -229,6 +528,328 @@ def cmd_normalize(args):
     print(f"Normalized {len(output)} samples to {out_path}", file=sys.stderr)
 
 
+def cmd_convert(args):
+    """Convert lab data to NCBI-standard pipeline CSVs."""
+    if args.from_vitek_csv:
+        _convert_vitek_csv(args.from_vitek_csv, args.output)
+    elif args.from_vitek_pdf:
+        _convert_vitek_pdf(args.from_vitek_pdf, args.output)
+    elif args.from_master_csv:
+        _convert_master_csv(args.from_master_csv, args.output)
+    elif args.from_kaimrc_xlsx:
+        _convert_kaimrc_xlsx(args.from_kaimrc_xlsx, args.metadata,
+                              args.existing_antibiogram, args.output)
+    else:
+        print("ERROR: Specify a --from-* source flag", file=sys.stderr)
+        sys.exit(1)
+
+
+def _convert_vitek_csv(input_path, output_path):
+    """Convert wide-format Vitek 2 TSV to long-format antibiogram CSV."""
+    with open(input_path, newline='') as f:
+        reader = csv.DictReader(f, delimiter='\t')
+        fieldnames = reader.fieldnames or []
+        input_rows = list(reader)
+
+    # Antibiotic columns = everything except UID
+    antibiotic_cols = [c for c in fieldnames if c != 'UID']
+
+    output_rows = []
+    for row in input_rows:
+        sample_id = row.get('UID', '').strip()
+        if not sample_id:
+            continue
+        for antibiotic in antibiotic_cols:
+            cell = row.get(antibiotic, '').strip()
+            parsed = _parse_vitek_cell(cell)
+            if parsed is None:
+                continue
+
+            # Determine method and units based on measurement type
+            is_screen = (parsed['measurement'] in ('POS', 'NEG')
+                         or antibiotic in _SCREEN_ANTIBIOTICS)
+            if is_screen and parsed['measurement'] in ('POS', 'NEG'):
+                method = 'Screen'
+                units = 'screen'
+            else:
+                method = 'MIC'
+                units = 'mg/L'
+
+            output_rows.append({
+                'sample_id': sample_id,
+                'antibiotic': antibiotic,
+                'resistance_phenotype': parsed['sir'],
+                'measurement': parsed['measurement'],
+                'measurement_sign': parsed['sign'],
+                'measurement_units': units,
+                'laboratory_typing_method': method,
+                'testing_standard': 'CLSI',
+                'testing_standard_version': '',
+                'platform': 'Vitek 2',
+                'aes_modified': 'true' if parsed['aes_modified'] else '',
+                'deduced': 'true' if parsed['deduced'] else '',
+            })
+
+    out_path = output_path or '/dev/stdout'
+    with open(out_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=CONVERT_OUTPUT_COLUMNS)
+        writer.writeheader()
+        writer.writerows(output_rows)
+
+    n_samples = len({r['sample_id'] for r in output_rows})
+    print(f"Converted {n_samples} samples, {len(output_rows)} rows to {out_path}",
+          file=sys.stderr)
+
+
+def _convert_master_csv(input_path, output_path):
+    """Convert master metadata CSV (m.csv) to pipeline sample_metadata.csv format."""
+    with open(input_path, newline='') as f:
+        reader = csv.DictReader(f)
+        input_rows = list(reader)
+
+    output_rows = []
+    for row in input_rows:
+        uid = row.get('UID', '').strip()
+        if not uid:
+            continue
+
+        lat = row.get('Lat', '').strip()
+        lon = row.get('Lon', '').strip()
+        lat_lon = f"{lat} {lon}" if lat and lon else ''
+
+        pvl_raw = row.get('PVL', '').strip().upper()
+        pvl = 'positive' if pvl_raw == 'TRUE' else 'negative' if pvl_raw == 'FALSE' else ''
+
+        mrsa_type = row.get('Type', '').strip()
+
+        patient = row.get('In_out_patient', '').strip()
+
+        # Combine SPA, CC, ST, SCCmec into strain description
+        spa = row.get('SPA', '').strip()
+        cc = row.get('CC', '').strip()
+        st = row.get('Sequence_type', '').strip()
+        sccmec = row.get('Sccmec', '').strip()
+        strain_parts = []
+        if spa:
+            strain_parts.append(spa)
+        if cc and cc != 'un-assigned':
+            strain_parts.append(cc)
+        if st:
+            strain_parts.append(st)
+        if sccmec and sccmec != 'FALSE':
+            strain_parts.append(f"SCCmec {sccmec}")
+        strain = '; '.join(strain_parts)
+
+        out = {col: '' for col in METADATA_COLUMNS}
+        out['sample_id'] = uid
+        out['organism'] = 'Staphylococcus aureus'
+        out['collection_date'] = row.get('Date', '').strip()
+        out['geo_loc_country'] = 'Saudi Arabia'
+        out['geo_loc_region'] = row.get('Geolocation', '').strip()
+        out['host'] = 'Homo sapiens'
+        out['collected_by'] = row.get('Source', '').strip()
+        out['patient_status'] = patient
+        out['mrsa_status'] = mrsa_type
+        out['strain'] = strain
+        out['lat_lon'] = lat_lon
+        out['pvl_status'] = pvl
+        output_rows.append(out)
+
+    out_path = output_path or '/dev/stdout'
+    with open(out_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=METADATA_COLUMNS)
+        writer.writeheader()
+        writer.writerows(output_rows)
+
+    print(f"Converted {len(output_rows)} samples to {out_path}", file=sys.stderr)
+
+
+# KAIMRC XLSX drug abbreviation → standard antibiotic name
+_KAIMRC_DRUG_MAP = {
+    'VAN': 'Vancomycin',
+    'CLIN': 'Clindamycin',
+    'DOXY': 'Doxycycline',
+    'TRI': 'Trimethoprim/Sulfamethoxazole',
+    'MUP': 'Mupirocin',
+    'ERY': 'Erythromycin',
+    'CEF': 'Cefoxitin',
+    'TETRA': 'Tetracycline',
+    'OXA': 'Oxacillin',
+    'RIFA': 'Rifampicin',
+    'CIPRO': 'Ciprofloxacin',
+    'GENTA': 'Gentamicin',
+    'MOX': 'Moxifloxacin',
+    'LIN': 'Linezolid',
+    'LINEZ': 'Linezolid',
+    'PENIC': 'Benzylpenicillin',
+    'TIG': 'Tigecycline',
+}
+
+_SIR_NORMALIZE = {'S': 'S', 's': 'S', 'R': 'R', 'r': 'R', 'I': 'I', 'i': 'I'}
+
+
+def _convert_kaimrc_xlsx(xlsx_path, metadata_path, existing_abg_path, output_path):
+    """Enrich metadata CSV with KAIMRC clinical data and extract supplementary drug rows."""
+    try:
+        import openpyxl
+    except ImportError:
+        print("ERROR: openpyxl required. Install with: pip install openpyxl", file=sys.stderr)
+        sys.exit(1)
+
+    wb = openpyxl.load_workbook(xlsx_path, read_only=True)
+    ws = wb['KAIMRC'] if 'KAIMRC' in wb.sheetnames else wb[wb.sheetnames[0]]
+    xlsx_rows = list(ws.iter_rows(values_only=True))
+
+    # Detect header row (KAIMRC has a merged header in row 0)
+    if xlsx_rows[0][0] in ('Sample info', None):
+        header = [str(h).strip() if h else f'_col{i}' for i, h in enumerate(xlsx_rows[1])]
+        data_start = 2
+    else:
+        header = [str(h).strip() if h else f'_col{i}' for i, h in enumerate(xlsx_rows[0])]
+        data_start = 1
+    col = {h: i for i, h in enumerate(header)}
+
+    # --- Read existing metadata ---
+    with open(metadata_path, newline='') as f:
+        reader = csv.DictReader(f)
+        meta_fields = reader.fieldnames
+        meta_by_id = {}
+        meta_order = []
+        for r in reader:
+            meta_by_id[r['sample_id']] = r
+            meta_order.append(r['sample_id'])
+
+    # --- Read existing antibiogram (sample_id, antibiotic) pairs ---
+    existing_pairs = set()
+    if existing_abg_path:
+        try:
+            with open(existing_abg_path, newline='') as f:
+                for r in csv.DictReader(f):
+                    existing_pairs.add((r['sample_id'], r['antibiotic']))
+        except FileNotFoundError:
+            pass
+
+    # --- Enrich metadata ---
+    enriched = 0
+    for xlsx_row in xlsx_rows[data_start:]:
+        uid = str(xlsx_row[col.get('UID', 0)] or '').strip()
+        if not uid or uid not in meta_by_id:
+            continue
+
+        meta = meta_by_id[uid]
+        changed = False
+
+        # gender → host_sex
+        gender = str(xlsx_row[col.get('gender', -1)] or '').strip().lower()
+        if gender in ('male', 'm') and not meta.get('host_sex', '').strip():
+            meta['host_sex'] = 'male'
+            changed = True
+        elif gender in ('female', 'f') and not meta.get('host_sex', '').strip():
+            meta['host_sex'] = 'female'
+            changed = True
+
+        # age → host_age
+        age_raw = str(xlsx_row[col.get('age', -1)] or '').strip()
+        age = re.sub(r'[^0-9]', '', age_raw)
+        if age and not meta.get('host_age', '').strip():
+            meta['host_age'] = age
+            changed = True
+
+        # isolation site → host_body_site
+        site_col = col.get('isolation site', col.get('isolation site'))
+        site = str(xlsx_row[site_col] or '').strip() if site_col is not None else ''
+        if site and site.upper() not in ('NA', 'NONE', '') and not meta.get('host_body_site', '').strip():
+            meta['host_body_site'] = site.lower()
+            changed = True
+
+        # in-patient/out-patient → patient_status (only fill if blank)
+        status_col = col.get('in-patient/out-patient')
+        status = str(xlsx_row[status_col] or '').strip().lower() if status_col is not None else ''
+        if not meta.get('patient_status', '').strip():
+            if status in ('in', 'in-patient', 'inpatient'):
+                meta['patient_status'] = 'hospitalized'
+                changed = True
+            elif status in ('out', 'out-patient', 'outpatient'):
+                meta['patient_status'] = 'outpatient'
+                changed = True
+
+        # diagnosis → host_disease
+        diag_col = col.get('diagnosis', col.get('diagnosis'))
+        diag = str(xlsx_row[diag_col] or '').strip() if diag_col is not None else ''
+        if diag and diag.upper() not in ('NA', 'NONE', '', '=FALSE()') and not meta.get('host_disease', '').strip():
+            meta['host_disease'] = diag
+            changed = True
+
+        if changed:
+            enriched += 1
+
+    # Write enriched metadata
+    with open(metadata_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=meta_fields)
+        writer.writeheader()
+        for sid in meta_order:
+            writer.writerow(meta_by_id[sid])
+
+    # --- Extract supplementary drug rows ---
+    drug_rows = []
+    seen = set()
+    for xlsx_row in xlsx_rows[data_start:]:
+        uid = str(xlsx_row[col.get('UID', 0)] or '').strip()
+        if not uid or uid not in meta_by_id:
+            continue
+
+        for abbrev, full_name in _KAIMRC_DRUG_MAP.items():
+            idx = col.get(abbrev)
+            if idx is None or idx >= len(xlsx_row):
+                continue
+            val = str(xlsx_row[idx] or '').strip()
+            sir = _SIR_NORMALIZE.get(val)
+            if not sir:
+                continue
+
+            # Skip if already covered by existing antibiogram
+            pair = (uid, full_name)
+            if pair in existing_pairs or pair in seen:
+                continue
+            seen.add(pair)
+
+            drug_rows.append({
+                'sample_id': uid,
+                'antibiotic': full_name,
+                'resistance_phenotype': sir,
+                'measurement': '',
+                'measurement_sign': '',
+                'measurement_units': '',
+                'laboratory_typing_method': 'VITEK 2',
+                'testing_standard': 'CLSI',
+                'testing_standard_version': '',
+                'platform': 'Vitek 2',
+                'aes_modified': '',
+                'deduced': '',
+            })
+
+    out_path = output_path or '/dev/stdout'
+    with open(out_path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=CONVERT_OUTPUT_COLUMNS)
+        writer.writeheader()
+        writer.writerows(drug_rows)
+
+    n_drug_samples = len({r['sample_id'] for r in drug_rows})
+    # Skipped FLU column (ambiguous abbreviation)
+    skipped = []
+    flu_col = col.get('FLU')
+    if flu_col is not None:
+        flu_vals = sum(1 for r in xlsx_rows[data_start:] if r[flu_col] and str(r[flu_col]).strip().upper() in ('S', 'R', 'I'))
+        if flu_vals:
+            skipped.append(f"FLU ({flu_vals} values, ambiguous abbreviation)")
+
+    print(f"Enriched {enriched} samples in {metadata_path}", file=sys.stderr)
+    print(f"Extracted {len(drug_rows)} supplementary drug rows from {n_drug_samples} samples to {out_path}",
+          file=sys.stderr)
+    if skipped:
+        print(f"WARNING: Skipped columns: {'; '.join(skipped)}", file=sys.stderr)
+
+
 def cmd_template(args):
     """Generate metadata and antibiogram CSV templates."""
     output_dir = args.output_dir or '.'
@@ -289,6 +910,16 @@ def main():
     p_normalize.add_argument('--antibiogram', help='Antibiogram CSV file')
     p_normalize.add_argument('-o', '--output', help='Output JSON file (default: stdout)')
 
+    # convert
+    p_convert = subparsers.add_parser('convert', help='Convert lab data to NCBI-standard pipeline CSVs')
+    p_convert.add_argument('--from-vitek-csv', help='Wide-format Vitek 2 TSV file (tab-delimited SIR:MIC cells)')
+    p_convert.add_argument('--from-vitek-pdf', help='Directory of Vitek 2 PDF reports (Phase 2)')
+    p_convert.add_argument('--from-master-csv', help='Master metadata CSV (m.csv) to sample_metadata.csv')
+    p_convert.add_argument('--from-kaimrc-xlsx', help='KAIMRC XLSX file to enrich metadata + extract drug data')
+    p_convert.add_argument('--metadata', help='Existing sample_metadata.csv to enrich (for --from-kaimrc-xlsx)')
+    p_convert.add_argument('--existing-antibiogram', help='Existing antibiogram CSV to avoid duplicates (for --from-kaimrc-xlsx)')
+    p_convert.add_argument('-o', '--output', help='Output CSV file (default: stdout)')
+
     args = parser.parse_args()
     if args.command == 'template':
         cmd_template(args)
@@ -296,6 +927,8 @@ def main():
         cmd_validate(args)
     elif args.command == 'normalize':
         cmd_normalize(args)
+    elif args.command == 'convert':
+        cmd_convert(args)
 
 
 if __name__ == '__main__':

@@ -27,6 +27,7 @@ include { AGR_TYPING } from './modules/agr_typing.nf'
 include { FETCH_RESFINDER_DB; INDEX_DB; KMA } from './modules/kma.nf'
 include { VISUALIZATION } from './modules/visualization.nf'
 include { VALIDATE_METADATA } from './modules/validate_metadata.nf'
+include { SNIPPY; SNIPPY_CORE } from './modules/snippy.nf'
 
 include { SEARCH_SRA } from './modules/search_sra.nf'
 include { FETCH_METADATA } from './modules/fetch_metadata.nf'
@@ -38,6 +39,28 @@ workflow {
     main:
         // Debug prints
         log.info "Params: species=${params.species}, search_limit=${params.search_limit}, input=${params.input}, assembler=${params.assembler}"
+
+        // Build include/exclude sample ID sets
+        def include_ids = null
+        def exclude_ids = [] as Set
+        if (params.include_samples) {
+            def f = file(params.include_samples)
+            if (f.exists()) {
+                include_ids = f.readLines().collect { it.trim() }.findAll { it && !it.startsWith('#') } as Set
+            } else {
+                include_ids = params.include_samples.tokenize(',').collect { it.trim() } as Set
+            }
+            log.info "Including ${include_ids.size()} samples"
+        }
+        if (params.exclude_samples) {
+            def f = file(params.exclude_samples)
+            if (f.exists()) {
+                exclude_ids = f.readLines().collect { it.trim() }.findAll { it && !it.startsWith('#') } as Set
+            } else {
+                exclude_ids = params.exclude_samples.tokenize(',').collect { it.trim() } as Set
+            }
+            log.info "Excluding ${exclude_ids.size()} samples"
+        }
 
         // Initialize metadata channel
         ch_metadata_json = Channel.empty()
@@ -71,9 +94,15 @@ workflow {
             }
         }
 
-        // Create a channel from the sample sheet
+        // Create a channel from the sample sheet, applying include/exclude filters
         ch_input = input_csv
             .splitCsv(header: true)
+            .filter { row ->
+                def sid = row.sample
+                if (include_ids != null && !(sid in include_ids)) return false
+                if (sid in exclude_ids) return false
+                return true
+            }
             .map { row ->
                 def meta = [id: row.sample]
                 if (row.sra && !row.sra.trim().isEmpty()) {
@@ -180,9 +209,23 @@ workflow {
         VISUALIZATION(SUMMARY_MERGER.out)
 
         // Pangenome and Phylogeny
-        PANAROO(PROKKA.out.collect())
-        IQTREE(PANAROO.out.aln)
-        SNP_DISTS(PANAROO.out.aln)
+        ch_seed_tree = params.iqtree_seed
+            ? Channel.fromPath(params.iqtree_seed, checkIfExists: true)
+            : Channel.of(file('NO_SEED_TREE'))
+
+        if (params.phylo_method == 'snippy') {
+            // Reference-based SNP calling — per-sample (cached on -resume)
+            ch_ref = Channel.fromPath(params.reference, checkIfExists: true)
+            SNIPPY(ch_trimmed_reads, ch_ref.collect())
+            SNIPPY_CORE(SNIPPY.out.results.map { id, dir -> dir }.collect(), ch_ref.collect())
+            IQTREE(SNIPPY_CORE.out.aln, ch_seed_tree)
+            SNP_DISTS(SNIPPY_CORE.out.aln)
+        } else {
+            // Pangenome-based core gene alignment (default)
+            PANAROO(PROKKA.out.collect())
+            IQTREE(PANAROO.out.aln, ch_seed_tree)
+            SNP_DISTS(PANAROO.out.aln)
+        }
 
         // Collect all the outputs and pass them to MultiQC
         ch_multiqc_in = channel.empty()
