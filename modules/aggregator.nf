@@ -62,7 +62,7 @@ try:
         with open(metadata_file, 'r') as f:
             meta_list = json.load(f)
             for m in meta_list:
-                if m.get("run_id") == sample_id:
+                if m.get("run_id") == sample_id or m.get("sample_id") == sample_id:
                     data["metadata"] = m
                     break
 except Exception as e:
@@ -260,7 +260,8 @@ with open(f"{sample_id}_summary.csv", 'w') as f:
         "mlst_scheme", "mlst_st", # Typing
         "spa_type", "sccmec_type", "agr_group", # MRSA Typing
         "amrfinder_genes", "abricate_genes", "kma_genes", # AMR
-        "virulence_genes", "plasmids" # Other
+        "virulence_genes", "plasmids", # Other
+        "infection_origin", "ast_profile" # Metadata
     ]
     writer.writerow(headers)
     
@@ -288,6 +289,17 @@ with open(f"{sample_id}_summary.csv", 'w') as f:
     vir_genes = ";".join(sorted(list(set([v["gene"] for v in data["virulence"] if v["gene"]]))))
     plasmids = ";".join(sorted(list(set([p["gene"] for p in data["plasmids"] if p["gene"]]))))
     
+    # Metadata-derived fields
+    infection_origin = data.get("metadata", {}).get("infection_origin", "")
+    antibiogram = data.get("metadata", {}).get("antibiogram", [])
+    ast_parts = []
+    for entry in antibiogram:
+        ab = entry.get("antibiotic", "")
+        sir = entry.get("sir", "")
+        if ab and sir:
+            ast_parts.append(f"{ab[:3].upper()}:{sir}")
+    ast_profile = ";".join(ast_parts) if ast_parts else ""
+
     writer.writerow([
         sample_id,
         total_reads, trimmed_reads, survival_rate, q30_rate,
@@ -295,7 +307,8 @@ with open(f"{sample_id}_summary.csv", 'w') as f:
         mlst_scheme, mlst_st,
         spa_type, sccmec_type, agr_group,
         amr_genes, abricate_genes, kma_genes,
-        vir_genes, plasmids
+        vir_genes, plasmids,
+        infection_origin, ast_profile
     ])
 
 print(f"Aggregation complete for {sample_id}")
