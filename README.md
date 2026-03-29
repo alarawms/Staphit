@@ -147,9 +147,9 @@ python bin/staphit-metadata convert --from-vitek-pdf vitek_pdfs/ -o antibiogram.
 # Generate antibiogram from wide-format Vitek TSV (SIR:MIC cells)
 python bin/staphit-metadata convert --from-vitek-csv collected_metadata_res.csv -o antibiogram.csv
 
-# Enrich metadata with clinical data from KAIMRC XLSX + extract supplementary drug rows
+# Enrich metadata with clinical data from external XLSX + extract supplementary drug rows
 python bin/staphit-metadata convert \
-    --from-kaimrc-xlsx "MRSA metadata and ibec KAIMRC.XLSX" \
+    --from-external-xlsx "MRSA metadata and ibec external.XLSX" \
     --metadata sample_metadata.csv \
     --existing-antibiogram antibiogram.csv \
     -o antibiogram_supplement.csv
